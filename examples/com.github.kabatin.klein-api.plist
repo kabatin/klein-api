@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Run klein-api at login.
+    cp examples/com.github.kabatin.klein-api.plist ~/Library/LaunchAgents/
+    # edit the paths below (uv tool installs to ~/.local/bin)
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.kabatin.klein-api.plist
+  Stop:  launchctl bootout gui/$(id -u)/com.github.kabatin.klein-api
+  Settings come from ~/.config/klein-api/config.toml (chmod 600). Put a token there if you bind
+  to a LAN address; peer tokens for [[coordinate_with]] live there too, never in this file.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.github.kabatin.klein-api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/klein-api</string>
+    <string>serve</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/klein-api.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/klein-api.log</string>
+</dict>
+</plist>
