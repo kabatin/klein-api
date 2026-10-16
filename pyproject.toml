@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "klein-api"
+version = "0.1.0"
+description = "Run FLUX.2 [klein] text/reference-to-image on an Apple Silicon Mac as an HTTP job API"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "kabatin" }]
+keywords = ["flux2", "flux.2-klein", "apple-silicon", "image-generation", "draw-things", "fastapi"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+  "fastapi>=0.132",  # older versions parse Content-Type-less bodies as JSON (CSRF)
+  "uvicorn>=0.30",
+  "pydantic>=2.8",
+  "pillow>=10.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/kabatin/klein-api"
+Issues = "https://github.com/kabatin/klein-api/issues"
+
+[project.scripts]
+klein-api = "klein_api.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "pyright>=1.1.380",
+  "httpx2>=2.13.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/klein_api"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "PTH", "T20"]
+ignore = [
+  "S603", # subprocess without shell=True is exactly what we want
+  "S607", # tools (draw-things-cli, pmset) are resolved from PATH on purpose
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S104", "S105", "S106", "S108", "PTH"]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --cov=klein_api --cov-report=term-missing --cov-fail-under=80"
+markers = [
+  "real: runs a real draw-things-cli generation (opt-in: KLEIN_API_REAL_TESTS=1)",
+]
