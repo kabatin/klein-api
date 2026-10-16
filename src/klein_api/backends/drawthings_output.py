@@ -1,12 +1,13 @@
 """Reading draw-things-cli's output. Isolated here so the formats can be corrected after
 checks against the real CLI without touching process handling.
 
-Assumed (from draw-things-cli 1.20260430.0 running Wan in wan-api; NOT yet verified for
-FLUX.2 [klein] on v26.1011.0):
+Measured with draw-things-cli v26.1011.0 running FLUX.2 [klein] under a pty (2026-10-16):
 
-- progress: ``ESC[1A ESC[K Sampling... i / n [bar] pct %`` (ANSI codes, maybe ``\\r`` redraws);
-- footer: ``Sampling step time (n step(s)): avg x s, ...``;
-- success: ``Wrote: <path>``; failure: ``Error: ...`` with exit code 1 (64 for bad arguments).
+- progress: ``ESC[1A ESC[K Sampling... i / n [bar] pct %`` + ``\\r\\n``, then
+  ``Finishing... [█] 82 %`` and ``Generated [█] 100%``;
+- ``Wrote: <path>``, ``Generation timing:``, ``  Sampling step time (n step(s)): avg x s, ...``;
+- failures: ``Error: ...`` with exit code 1 (bad size, missing input image) or 64 (unknown
+  model: a model table first, then the error, then ``Usage: ...``).
 
 Parsing is tolerant: unknown lines are ignored, and success does not depend on the ``Wrote:``
 line (exit 0, no ``Error:`` and a fresh, decodable PNG decide; the workflow checks the PNG).
@@ -24,6 +25,13 @@ STEP_TIME = re.compile(r"Sampling step time \((\d+) step\(s\)\):\s*avg\s+([0-9.]
 ERROR = re.compile(r"^(?:Error|error|ERROR):\s*(.+)$")
 WROTE = re.compile(r"^Wrote:\s*(.+?)\s*$")
 MAX_ERROR_CHARS = 500
+# Absolute or home-relative paths inside error text (the CLI names input files): never shown
+# to clients, which only need to know what went wrong.
+PATH = re.compile(r"(?<![\w.])(?:~|/)[^\s'\"]*")
+
+
+def scrub_paths(text: str) -> str:
+    return PATH.sub("<path>", text)
 
 
 class OutputWatch:
@@ -55,7 +63,8 @@ class OutputWatch:
             return True
         error = ERROR.match(text)
         if error is not None:
-            self.error = error.group(1)[:MAX_ERROR_CHARS]
+            if self.error is None:  # the first error is the cause; later ones are follow-ups
+                self.error = scrub_paths(error.group(1))[:MAX_ERROR_CHARS]
             return True
         wrote = WROTE.match(text)
         if wrote is not None:

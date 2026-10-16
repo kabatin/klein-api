@@ -53,6 +53,9 @@ FAKE_CLI = textwrap.dedent(
         print(f"Error: Image dimensions must be multiples of 64, got {w}x{h}", flush=True)
         sys.exit(1)
     out = opt("--output")
+    if mode == "missing_image":
+        print(f"Error: Input image path does not exist: {os.path.dirname(out)}/inputs/r.png")
+        sys.exit(1)
     if mode == "fail" or (mode == "fail_second" and out.endswith("raw-1.png")):
         print("Error: Generation failed (no tensors returned)", flush=True)
         sys.exit(1)
@@ -159,6 +162,22 @@ def test_plans_use_one_megapixel_multiples_of_64(backend: DrawThingsCliBackend) 
     assert backend.typical_seconds("standard") == 26.0
 
 
+def test_estimates_never_under_predict_measured_runs(backend: DrawThingsCliBackend) -> None:
+    """9B measurements on the target Mac: wide sizes are slower than their pixel count, and
+    references multiply the time (1 ref 50.3 s, 2 refs 72.9 s at 1024x1024)."""
+    measured = {16 / 9: 30.4, 9 / 16: 26.0, 21 / 9: 35.1, 1.0: 25.9}
+    for ratio, seconds in measured.items():
+        assert backend.plan(request(aspect_ratio=ratio)).estimate_seconds >= seconds
+    # unmeasured skewed sizes are at least as slow as the next more skewed measured one
+    assert backend.plan(request(aspect_ratio=2.0)).estimate_seconds >= 35.1
+    assert backend.plan(request(aspect_ratio=9 / 21)).estimate_seconds >= 35.1
+    ref = Path("r.png")
+    one = backend.plan(request(aspect_ratio=1.0, references=(ref,))).estimate_seconds
+    two = backend.plan(request(aspect_ratio=1.0, references=(ref, ref))).estimate_seconds
+    four = backend.plan(request(aspect_ratio=1.0, references=(ref,) * 4)).estimate_seconds
+    assert one >= 50.3 and two >= 72.9 and four > two * 1.5
+
+
 def test_generate_passes_every_setting_explicitly(
     backend: DrawThingsCliBackend, tmp_path: Path, calls: Path
 ) -> None:
@@ -211,7 +230,7 @@ def test_count_runs_one_process_per_image_with_seed_plus_i(
 def test_references_are_passed_as_images(
     fake_cli: Path, models_dir: Path, tmp_path: Path, calls: Path
 ) -> None:
-    backend = make_backend(fake_cli, models_dir, max_reference_images=2, reference_strength=0.9)
+    backend = make_backend(fake_cli, models_dir, max_reference_images=2)
     refs = (tmp_path / "a.png", tmp_path / "b.png")
     for ref in refs:
         make_png(ref, (256, 256))
@@ -222,16 +241,17 @@ def test_references_are_passed_as_images(
     argv = json.loads(calls.read_text().splitlines()[0])
     images = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--image"]
     assert images == [str(refs[0]), str(refs[1])]  # order kept: the first is the main one
-    assert flags_of(argv)["--strength"] == "0.9"
+    # strength stays at the CLI's 1.0: anything lower turns references into img2img
+    assert "--strength" not in argv
     assert backend.max_reference_images == 2
 
 
 def test_references_beyond_the_setting_never_reach_the_engine(
-    backend: DrawThingsCliBackend, tmp_path: Path, calls: Path
+    fake_cli: Path, models_dir: Path, tmp_path: Path, calls: Path
 ) -> None:
+    backend = make_backend(fake_cli, models_dir, max_reference_images=0)
     ref = tmp_path / "a.png"
     make_png(ref)
-    assert backend.max_reference_images == 0
     result = backend.generate(
         request(references=(ref,)), tmp_path / "job", timeout_s=60, cancel=threading.Event()
     )
@@ -280,6 +300,7 @@ def test_redrawn_progress_lines_use_the_last_value(
         ("error_exit0", "model file is corrupt"),
         ("exit0_no_file", "wrote no image"),
         ("wrote_outside", "wrote no image"),
+        ("missing_image", "Input image path does not exist: <path>"),
     ],
 )
 def test_failures(
@@ -294,6 +315,7 @@ def test_failures(
     assert not result.ok and needle in result.describe_failure()
     assert result.outputs == () and result.failure_code == "generation_failed"
     assert result.log_path == tmp_path / "job" / "backend-0.log"
+    assert str(tmp_path) not in result.describe_failure()  # no paths for clients
 
 
 def test_a_failing_second_image_discards_the_first(
@@ -352,10 +374,14 @@ def test_health(backend: DrawThingsCliBackend, models_dir: Path) -> None:
     assert checks["draw-things-cli"].level is Level.OK
     assert checks["FLUX.2 [klein] standard model"].level is Level.OK
     assert checks["FLUX.2 [klein] draft model"].level is Level.OK
-    assert "disabled" in checks["reference images"].detail
-    (models_dir / "qwen_3_8b_q8p.ckpt").unlink()
-    model = {c.name: c for c in backend.health()}["FLUX.2 [klein] standard model"]
-    assert model.level is Level.FAIL and "qwen_3_8b_q8p.ckpt" in model.detail
+    assert "up to 2" in checks["reference images"].detail
+    (models_dir / "qwen_3_8b_q8p.ckpt-tensordata").unlink()
+    (models_dir / "qwen_3_4b_q8p.ckpt").unlink()
+    checks = {c.name: c for c in backend.health()}
+    model = checks["FLUX.2 [klein] standard model"]
+    assert model.level is Level.FAIL and model.detail.endswith("qwen_3_8b_q8p.ckpt-tensordata")
+    draft = checks["FLUX.2 [klein] draft model"]
+    assert draft.level is Level.FAIL and "qwen_3_4b_q8p.ckpt" in draft.detail
 
 
 def test_missing_cli(models_dir: Path, tmp_path: Path) -> None:

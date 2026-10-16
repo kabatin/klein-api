@@ -260,7 +260,7 @@ def test_build_backend_is_draw_things(tmp_path: Path) -> None:
 
     base = {"KLEIN_API_DATA_DIR": str(tmp_path)}
     default = build_backend(load_settings(env=base, config_path=tmp_path / "x"))
-    assert isinstance(default, DrawThingsCliBackend) and default.max_reference_images == 0
+    assert isinstance(default, DrawThingsCliBackend) and default.max_reference_images == 2
 
 
 def test_smoke_refuses_while_a_server_holds_the_data_dir(settings: Settings, healthy: None) -> None:

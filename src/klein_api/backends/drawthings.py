@@ -7,12 +7,13 @@ Facts this module relies on (draw-things-cli v26.1011.0 on the target Mac, 2026-
   file is downloaded mid-job;
 - width and height must be multiples of 64 (see :mod:`klein_api.backends.sizes`);
 - FLUX.2 [klein] is distilled: 4 steps, CFG 1 (never raised), passed explicitly;
-- ``--seed`` is deterministic, ``--output`` writes a PNG, ``--image`` is repeatable (the first is
-  the main image) and ``--strength`` goes with it;
-- every image is its own process (``batchCount`` is unverified), with ``seed + i``.
+- ``--seed`` is deterministic and ``--output`` writes a PNG;
+- ``--image`` (repeatable, the first is the main one) is a FLUX.2 reference at the default
+  strength 1.0, centre-cropped by the CLI to the output aspect. ``--strength`` is never
+  passed: below 1.0 it turns into img2img and returns roughly the input;
+- one image per run with ``seed + i``: ``batchCount`` is ignored and ``batchSize=2`` is slower
+  than two runs.
 
-Not verified yet: whether ``--image`` is FLUX.2 reference editing or img2img for klein. Until
-it is, ``max_reference_images`` defaults to 0 and the workflow refuses references.
 Output line formats are parsed in :mod:`klein_api.backends.drawthings_output`.
 """
 
@@ -38,13 +39,14 @@ from klein_api.backends.base import (
 )
 from klein_api.backends.drawthings_output import OutputWatch
 from klein_api.backends.process import ProcessOutcome, reap_orphan, run_process
-from klein_api.backends.sizes import generation_size
+from klein_api.backends.sizes import generation_size, reference_factor, size_factor
 from klein_api.checks import Check, Level
 from klein_api.settings import Settings, SettingsError
 
 DEFAULT_CLI = "~/.local/opt/draw-things-cli/v26.1011.0/draw-things-cli"
 DEFAULT_MODELS_DIR = Path("~/Library/Containers/com.liuliu.draw-things/Data/Documents/Models")
 MAX_REFERENCE_IMAGES = 4
+DEFAULT_REFERENCE_IMAGES = 2  # 3-4 work in principle but are unmeasured
 ENGINE_FLAGS = ("--local", "--offline", "--no-download-missing", "--disable-preview")
 
 
@@ -53,11 +55,13 @@ class Recipe:
     """Engine settings behind a quality tier. Never exposed to clients."""
 
     model: str
-    # files the model needs besides itself (checked by `doctor` / `serve`)
+    # files the model needs besides itself (checked by `doctor` / `serve`); a quantised text
+    # encoder's .ckpt is only an index (0.4 MB): its weights are in the -tensordata file
     dependencies: tuple[str, ...]
     steps: int
     cfg: float
-    # measured per 1024x1024 image, cold process (model load included)
+    # per 1024x1024 image, cold process (model load included): measured 25.9 s (9B) and
+    # 14 s (4B), rounded up
     seconds_per_image: float
 
 
@@ -65,21 +69,21 @@ VAE = "flux_2_vae_f16.ckpt"
 RECIPES: dict[Quality, Recipe] = {
     "standard": Recipe(
         model="flux_2_klein_9b_i8x.ckpt",
-        dependencies=("qwen_3_8b_q8p.ckpt", VAE),
+        dependencies=("qwen_3_8b_q8p.ckpt", "qwen_3_8b_q8p.ckpt-tensordata", VAE),
         steps=4,
         cfg=1.0,
         seconds_per_image=26.0,
     ),
-    # 4B: ~14 s measured; the text encoder file of the 4B model is not known yet (unchecked)
     "draft": Recipe(
         model="flux_2_klein_4b_i8x.ckpt",
-        dependencies=(VAE,),
+        dependencies=("qwen_3_4b_q8p.ckpt", "qwen_3_4b_q8p.ckpt-tensordata", VAE),
         steps=4,
         cfg=1.0,
         seconds_per_image=15.0,
     ),
 }
-BASE_PIXELS = 1024 * 1024
+# Size timings are only measured with the 9B model; the 4B is assumed to scale the same way.
+SIZE_REFERENCE_MODEL = "flux_2_klein_9b_i8x.ckpt"
 
 
 class DrawThingsOptions(BaseModel):
@@ -89,9 +93,9 @@ class DrawThingsOptions(BaseModel):
 
     cli: str = DEFAULT_CLI
     models_dir: Path | None = None
-    # 0 until klein's --image is verified to be reference editing (not img2img)
-    max_reference_images: int = Field(default=0, ge=0, le=MAX_REFERENCE_IMAGES)
-    reference_strength: float = Field(default=1.0, ge=0.0, le=1.0)
+    max_reference_images: int = Field(
+        default=DEFAULT_REFERENCE_IMAGES, ge=0, le=MAX_REFERENCE_IMAGES
+    )
     stop_grace_s: float = Field(default=15.0, ge=1.0, le=120.0)
 
 
@@ -123,7 +127,11 @@ class DrawThingsCliBackend(KleinBackend):
 
     def plan(self, request: GenerationRequest) -> GenerationPlan:
         width, height = generation_size(request.aspect_ratio)
-        per_image = RECIPES[request.quality].seconds_per_image * width * height / BASE_PIXELS
+        per_image = (
+            RECIPES[request.quality].seconds_per_image
+            * size_factor((width, height), SIZE_REFERENCE_MODEL)
+            * reference_factor(len(request.references))
+        )
         estimate = per_image * request.count
         return GenerationPlan(width, height, request.count, estimate_seconds=round(estimate, 1))
 
@@ -164,7 +172,7 @@ class DrawThingsCliBackend(KleinBackend):
             Check(
                 "reference images",
                 Level.OK,
-                f"up to {refs} (strength {self.options.reference_strength:g})"
+                f"up to {refs} (FLUX.2 references)"
                 if refs
                 else "disabled (max_reference_images = 0): requests with references get 422",
             )
@@ -178,9 +186,7 @@ class DrawThingsCliBackend(KleinBackend):
         recipe = RECIPES[request.quality]
         references: list[str] = []
         for path in request.references:
-            references += ["--image", str(path)]
-        if references:
-            references += ["--strength", f"{self.options.reference_strength:g}"]
+            references += ["--image", str(path)]  # never --strength: < 1 means img2img
         return [
             cli,
             "generate",
