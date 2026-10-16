@@ -172,9 +172,14 @@ As in wan-api: `200` `canceled`, `202` while the engine is stopping, `409` if al
 
 The Mac has one GPU and one pool of unified memory. Other servers on it (vpipe-api, wan-api) do not
 know about klein-api. When `coordinate_with` is configured (a list of `{name, health_url, token}`),
-the job at the head of the queue starts only after **every** listed server reports
-`running == 0 && waiting == 0` (and `outside_runs == 0` when present) **twice, `settle_seconds`
-(default 30) apart** — clients often submit follow-up jobs right after one finishes. While waiting the
+the job at the head of the queue starts only after a check in which **every** listed server reports
+idle: `running == 0 && waiting == 0` (and `outside_runs == 0` when present). The server remembers the
+time it last saw any listed server busy (`running`, `waiting` or `outside_runs` > 0). If no server has
+been seen busy within the last `settle_seconds` (default 30) — including when none has ever been seen
+busy — a single all-idle check is enough and the job starts at once. If one was seen busy within that
+window, the job waits and starts only if a second all-idle check, made `settle_seconds` after that busy
+observation, still finds every server idle; a busy answer at any check starts the window again from
+that observation — clients often submit follow-up jobs right after one finishes. While waiting the
 job stays `queued` with `waiting_for` set. An unreachable server counts as idle (logged as a warning).
 Coordination is checked only before a job starts; a running job is never paused.
 

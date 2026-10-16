@@ -172,7 +172,7 @@ def test_peer_names_must_be_unique(tmp_path: Path) -> None:
         load_settings(env={}, config_path=cfg)
 
 
-# -- the double check ------------------------------------------------------------------
+# -- the settle rule ---------------------------------------------------------------------
 
 
 class ScriptedProbe:
@@ -190,43 +190,104 @@ class ScriptedProbe:
         return state
 
 
+class FakeClock:
+    """Monotonic time that only moves when the coordinator sleeps (or the test says so)."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 IDLE = PeerHealth(running=0, waiting=0)
 BUSY = PeerHealth(running=1, waiting=0)
 PEER = PeerServer(name="vpipe-api", health_url="http://127.0.0.1:8765/v1/health")
 
 
-def run_wait(coordinator: Coordinator) -> tuple[bool, list[float], list[str]]:
+def coordinator_with(
+    probe, clock: FakeClock, *, peers=(PEER,), settle: float = 30, poll: float = 5
+) -> Coordinator:
+    return Coordinator(peers, settle_seconds=settle, poll_seconds=poll, probe=probe, clock=clock)
+
+
+def run_wait(
+    coordinator: Coordinator, clock: FakeClock
+) -> tuple[bool, list[float], list[str], float]:
+    """Returns (started, sleeps, waiting_for values, clock time when it returned)."""
     sleeps: list[float] = []
     waiting: list[str] = []
 
     def sleep(seconds: float) -> bool:
         sleeps.append(round(seconds, 3))
+        clock.now += seconds
         return True
 
     ok = coordinator.wait_until_idle("job_x", sleep=sleep, on_waiting=waiting.append)
-    return ok, sleeps, waiting
+    return ok, sleeps, waiting, clock.now
 
 
-def test_idle_twice_settle_seconds_apart() -> None:
-    probe = ScriptedProbe(IDLE)
-    ok, sleeps, waiting = run_wait(Coordinator([PEER], settle_seconds=30, probe=probe))
-    assert ok and probe.calls == 2 and sleeps == [30.0] and waiting == ["vpipe-api"]
+def test_first_ever_idle_check_starts_immediately() -> None:
+    """Guards against the old rule (always a second check settle_seconds later)."""
+    clock, probe = FakeClock(), ScriptedProbe(IDLE)
+    ok, sleeps, waiting, _ = run_wait(coordinator_with(probe, clock), clock)
+    assert ok and probe.calls == 1 and sleeps == [] and waiting == []
 
 
-def test_busy_restarts_the_settle_window() -> None:
-    probe = ScriptedProbe(BUSY, IDLE, BUSY, IDLE, IDLE)
-    ok, sleeps, waiting = run_wait(
-        Coordinator([PEER], settle_seconds=30, poll_seconds=5, probe=probe)
-    )
-    assert ok and probe.calls == 5
-    assert sleeps == [5.0, 30.0, 5.0, 30.0]
-    assert set(waiting) == {"vpipe-api"}
+def test_idle_long_after_the_last_busy_sighting_starts_immediately() -> None:
+    clock, probe = FakeClock(), ScriptedProbe(BUSY, IDLE)
+    coordinator = coordinator_with(probe, clock)
+    assert run_wait(coordinator, clock)[0]  # first job: busy, then settled
+    clock.now += 31  # next job arrives more than settle_seconds after the last busy sighting
+    calls = probe.calls
+    ok, sleeps, waiting, _ = run_wait(coordinator, clock)
+    assert ok and probe.calls == calls + 1 and sleeps == [] and waiting == []
+
+
+def test_busy_then_idle_waits_settle_seconds_after_the_busy_sighting() -> None:
+    """Guards against a rule without settling (start on the first idle check)."""
+    clock, probe = FakeClock(), ScriptedProbe(BUSY, IDLE)
+    busy_at = clock.now
+    ok, sleeps, waiting, ended = run_wait(coordinator_with(probe, clock, poll=5), clock)
+    # busy at t, idle at t+5 (too soon), idle again at t+30 -> start
+    assert ok and probe.calls == 3 and sleeps == [5.0, 25.0]
+    assert ended == busy_at + 30
+    assert waiting == ["vpipe-api", "vpipe-api"]
+
+
+def test_a_recent_busy_sighting_from_an_earlier_wait_still_counts() -> None:
+    clock, probe = FakeClock(), ScriptedProbe(BUSY)
+    coordinator = coordinator_with(probe, clock, poll=5)
+    # job A sees the peer busy at t=1000 and is canceled while waiting
+    abandoned = coordinator.wait_until_idle("a", sleep=lambda _s: False, on_waiting=print)
+    assert not abandoned and coordinator.last_busy == 1000.0
+    # job B checks at t=1010: the peer is idle, but was busy 10 s ago -> wait until t=1030
+    clock.now = 1010.0
+    probe.states, probe.calls = [IDLE], 0
+    ok, sleeps, waiting, ended = run_wait(coordinator, clock)
+    assert ok and probe.calls == 2 and sleeps == [20.0] and ended == 1030.0
+    assert waiting == ["vpipe-api"]
+
+
+def test_busy_again_during_the_settle_wait_moves_the_window() -> None:
+    clock, probe = FakeClock(), ScriptedProbe(BUSY, IDLE, BUSY, IDLE, IDLE)
+    ok, sleeps, _, ended = run_wait(coordinator_with(probe, clock, poll=5), clock)
+    # busy t, idle t+5, busy t+30, idle t+35, idle t+60 -> start
+    assert ok and probe.calls == 5 and sleeps == [5.0, 25.0, 5.0, 25.0]
+    assert ended == 1060.0
+
+
+def test_zero_settle_starts_on_the_first_idle_check() -> None:
+    clock, probe = FakeClock(), ScriptedProbe(BUSY, IDLE)
+    ok, sleeps, _, _ = run_wait(coordinator_with(probe, clock, settle=0, poll=5), clock)
+    assert ok and sleeps == [5.0]
 
 
 def test_unreachable_counts_as_idle(caplog: pytest.LogCaptureFixture) -> None:
+    clock = FakeClock()
     probe = ScriptedProbe(PeerUnreachableError("ConnectionRefusedError"))
-    ok, _, _ = run_wait(Coordinator([PEER], settle_seconds=0, probe=probe))
-    assert ok and probe.calls == 1
+    ok, sleeps, _, _ = run_wait(coordinator_with(probe, clock), clock)
+    assert ok and probe.calls == 1 and sleeps == []
     assert "coordination.unreachable" in caplog.text
 
 
@@ -238,15 +299,20 @@ def test_every_peer_must_be_idle() -> None:
         queue = states[peer.name]
         return queue.pop(0) if len(queue) > 1 else queue[0]
 
-    ok, sleeps, waiting = run_wait(
-        Coordinator([PEER, wan], settle_seconds=1, poll_seconds=2, probe=probe)
+    clock = FakeClock()
+    ok, sleeps, waiting, _ = run_wait(
+        coordinator_with(probe, clock, peers=(PEER, wan), settle=10, poll=2), clock
     )
-    assert ok and waiting[0] == "wan-api" and sleeps == [2.0, 1.0]
+    assert ok and waiting[0] == "wan-api" and sleeps == [2.0, 8.0]
 
 
 def test_an_abandoned_wait_returns_false() -> None:
     coordinator = Coordinator([PEER], settle_seconds=30, probe=ScriptedProbe(BUSY))
     assert not coordinator.wait_until_idle("j", sleep=lambda _s: False, on_waiting=lambda _n: None)
+    settling = Coordinator([PEER], settle_seconds=30, probe=ScriptedProbe(BUSY, IDLE))
+    assert not settling.wait_until_idle(
+        "j", sleep=lambda s: s < 10, on_waiting=lambda _n: None
+    )  # poll sleep ok, settle sleep abandoned
     assert Coordinator([]).wait_until_idle("j", sleep=lambda _s: False, on_waiting=print)
 
 
@@ -287,7 +353,7 @@ def backend() -> FakeKleinBackend:
 @pytest.fixture
 def client(tmp_path: Path, backend: FakeKleinBackend, switch: Switch) -> Iterator[TestClient]:
     registry = WorkflowRegistry([EchoWorkflow()])
-    coordinator = Coordinator([PEER], settle_seconds=0.2, poll_seconds=0.05, probe=switch)
+    coordinator = Coordinator([PEER], settle_seconds=0.4, poll_seconds=0.05, probe=switch)
     queue = JobQueue(
         JobStore(tmp_path),
         registry,
@@ -328,7 +394,8 @@ def test_a_job_waits_queued_while_another_gpu_server_is_busy(
     done = client.get(f"/v1/jobs/{job['id']}").json()
     assert done["waiting_for"] is None
     timings = done["timings"]
-    assert timings["coordination_seconds"] >= 0.5  # busy for >= 0.3 s, then settled 0.2 s
+    # busy for >= 0.3 s, then started no sooner than 0.4 s after the last busy sighting
+    assert timings["coordination_seconds"] >= 0.6
     assert timings["queue_seconds"] < timings["coordination_seconds"]
     assert timings["total_seconds"] >= timings["queue_seconds"] + timings["coordination_seconds"]
     assert client.get("/v1/capabilities").json()["coordination"] == {"waits_for": ["vpipe-api"]}
@@ -388,5 +455,27 @@ def test_without_peers_there_is_no_coordination(tmp_path: Path, backend: FakeKle
         wait_for(lambda: q.view(record.id).record.status is JobStatus.SUCCEEDED)
         assert probe.calls == 0
         assert q.view(record.id).record.timings["coordination_seconds"] == 0.0
+    finally:
+        q.stop(timeout_s=5)
+
+
+def test_idle_peers_do_not_delay_a_job(tmp_path: Path, backend: FakeKleinBackend) -> None:
+    """With settle_seconds = 60 and peers that were never busy, the job starts at once."""
+    probe = ScriptedProbe(IDLE)
+    q = JobQueue(
+        JobStore(tmp_path),
+        WorkflowRegistry([EchoWorkflow()]),
+        backend,
+        max_waiting=1,
+        timeout_factor=2,
+        retention_days=7,
+        coordinator=Coordinator([PEER], settle_seconds=60, poll_seconds=60, probe=probe),
+    )
+    q.start()
+    try:
+        record, _ = q.submit(EchoWorkflow(), EchoParams(text="a"))
+        wait_for(lambda: q.view(record.id).record.status is JobStatus.SUCCEEDED)
+        assert probe.calls == 1
+        assert q.view(record.id).record.timings["coordination_seconds"] < 5
     finally:
         q.stop(timeout_s=5)

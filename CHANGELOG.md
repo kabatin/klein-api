@@ -13,6 +13,6 @@ First version.
 - Backend `drawthings`: `draw-things-cli` headless under a pty, `--local --offline --no-download-missing
   --disable-preview`, 4 steps / CFG 1, one process per image (`seed + i`), stopped on cancel/timeout, orphans
   reaped after a restart. Output parsing isolated in `drawthings_output.py`.
-- Coordination with other GPU servers (`coordinate_with`, `settle_seconds`): double idle check before a job
-  starts; unreachable servers count as idle (warning); peer tokens never logged, redirects not followed.
+- Coordination with other GPU servers (`coordinate_with`, `settle_seconds`): a job starts on an all-idle
+  check, and not before `settle_seconds` after any server was last seen busy; unreachable servers count as idle (warning); peer tokens never logged, redirects not followed.
 - Job store/queue, security and process handling adapted from wan-api 0.1.0.

@@ -24,7 +24,8 @@ The full contract is [docs/api.md](docs/api.md).
 - **One GPU slot, honest backpressure.** One job at a time (its images run one after another), a small waiting
   queue, `429 busy` with `Retry-After` when full.
 - **Plays nicely with other GPU servers.** With `coordinate_with`, a job starts only once vpipe-api / wan-api
-  report idle twice, `settle_seconds` apart; meanwhile it stays `queued` with `waiting_for`.
+  report idle, and — if one was busy recently — not before `settle_seconds` after it was last seen busy;
+  meanwhile it stays `queued` with `waiting_for`.
 - **Restart-safe.** Jobs live on disk; queued jobs run again, interrupted ones fail as retryable, and an engine
   process left behind by a crashed server is stopped.
 
@@ -121,7 +122,7 @@ failure category) — never prompts, images or tokens.
 | `job_timeout_factor` | `3.0` | a job is stopped after `estimate × factor + 5 min` |
 | `max_body_mb` | `64` | request size limit (a 20 MB image is ~27 MB of base64) |
 | `coordinate_with` | `[]` | `[[coordinate_with]]` tables: `name`, `health_url`, optional `token` (file only) |
-| `settle_seconds` | `30` | the two idle checks of every coordinated server are this far apart |
+| `settle_seconds` | `30` | after a coordinated server was seen busy, a job starts no sooner than this |
 | `coordination_poll_seconds` | `5` | how often a busy server is asked again |
 
 `[backends.drawthings]`: `cli`, `models_dir`, `max_reference_images` (0–4, default 0),
@@ -130,14 +131,16 @@ failure category) — never prompts, images or tokens.
 ### Coordination with other GPU servers
 
 The Mac has one GPU and one pool of unified memory. When `coordinate_with` is set, the job at the head of the
-queue starts only after **every** listed server's `/v1/health` reports `running == 0 && waiting == 0` (and
-`outside_runs == 0` when present) **twice, `settle_seconds` apart**. Until then it is `queued` with
+queue starts only after a check in which **every** listed server's `/v1/health` reports `running == 0 &&
+waiting == 0` (and `outside_runs == 0` when present). klein-api remembers when it last saw any of them busy:
+if that was more than `settle_seconds` ago (or never), one all-idle check is enough and the job starts at once;
+otherwise it checks again `settle_seconds` after that busy sighting and starts only if everything is still idle
+(a busy answer restarts the window). Until then it is `queued` with
 `waiting_for: "<name>"` and does not count as running in klein-api's own `/v1/health`. A server that cannot be
 reached (or answers anything but a valid health body) counts as idle and is logged as a warning. A running job
 is never paused. Redirects are not followed, so a peer token is only ever sent to its own `health_url`.
 
-Note that the double check costs `settle_seconds` before **every** job, even when the other servers are idle
-(it shows up as `timings.coordination_seconds`).
+Time spent waiting shows up as `timings.coordination_seconds`.
 
 ### Reference images (off until verified)
 
