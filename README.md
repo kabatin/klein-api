@@ -26,8 +26,10 @@ The full contract is [docs/api.md](docs/api.md).
 - **Plays nicely with other GPU servers.** With `coordinate_with`, a job starts only once vpipe-api / wan-api
   report idle, and — if one was busy recently — not before `settle_seconds` after it was last seen busy;
   meanwhile it stays `queued` with `waiting_for`.
-- **Restart-safe.** Jobs live on disk; queued jobs run again, interrupted ones fail as retryable, and an engine
-  process left behind by a crashed server is stopped.
+- **No needless model loads.** Consecutive `standard` jobs reuse a resident engine with the 9B already loaded
+  (~19.5 s instead of ~26 s per image); it is released when idle or when another GPU server needs the memory.
+- **Restart-safe.** Jobs live on disk; queued jobs run again, interrupted ones fail as retryable, and engine
+  processes left behind by a crashed server are stopped.
 
 ## Requirements
 
@@ -37,10 +39,20 @@ The full contract is [docs/api.md](docs/api.md).
 
 | tier | model file | also needs |
 |---|---|---|
-| `standard` | `flux_2_klein_9b_i8x.ckpt` | `qwen_3_8b_q8p.ckpt`, `flux_2_vae_f16.ckpt` |
-| `draft` | `flux_2_klein_4b_i8x.ckpt` | `flux_2_vae_f16.ckpt` (+ its text encoder, not checked yet) |
+| `standard` | `flux_2_klein_9b_i8x.ckpt` | `qwen_3_8b_q8p.ckpt` + `qwen_3_8b_q8p.ckpt-tensordata`, `flux_2_vae_f16.ckpt` |
+| `draft` | `flux_2_klein_4b_i8x.ckpt` | `qwen_3_4b_q8p.ckpt` + `qwen_3_4b_q8p.ckpt-tensordata`, `flux_2_vae_f16.ckpt` |
 
-Measured on the target Mac (1024×1024, one cold process per image): 9B ~26 s, 4B ~14 s.
+(A quantised text encoder's `.ckpt` is only a 0.4 MB index; its weights are in the `-tensordata` file.)
+
+Measured on the target Mac (MacBook Pro M5, 32 GB, draw-things-cli v26.1011.0, one cold process per image):
+
+| | 1024×1024 | 1344×768 | 768×1344 | 1536×640 | + 1 reference | + 2 references |
+|---|---|---|---|---|---|---|
+| 9B (`standard`) | 25.9 s | 30.4 s | 26.0 s | 35.1 s | 50.3 s | 72.9 s |
+| 4B (`draft`) | ~14 s | | | | | |
+| 9B, resident server, next image | 19.3–19.6 s | | | | 38.8 s | |
+
+Wide sizes are slower than their pixel count; estimates never assume less than the measured time.
 
 ## Setup on the Mac
 
@@ -63,7 +75,8 @@ port = 8767
 [backends.drawthings]
 cli = "~/.local/opt/draw-things-cli/v26.1011.0/draw-things-cli"
 models_dir = "~/Library/Containers/com.liuliu.draw-things/Data/Documents/Models"
-max_reference_images = 0     # keep 0 until reference editing is verified (see below)
+max_reference_images = 2     # 0-4; 3-4 work but are unmeasured
+resident = true              # keep the 9B loaded between standard jobs (see below)
 
 # wait for other GPU servers on this Mac before each job
 [[coordinate_with]]
@@ -125,8 +138,20 @@ failure category) — never prompts, images or tokens.
 | `settle_seconds` | `30` | after a coordinated server was seen busy, a job starts no sooner than this |
 | `coordination_poll_seconds` | `5` | how often a busy server is asked again |
 
-`[backends.drawthings]`: `cli`, `models_dir`, `max_reference_images` (0–4, default 0),
-`reference_strength` (default 1.0), `stop_grace_s`.
+`[backends.drawthings]`:
+
+| key | default | |
+|---|---|---|
+| `cli` | `~/.local/opt/draw-things-cli/v26.1011.0/draw-things-cli` | |
+| `models_dir` | the Draw Things app's `Models` folder | |
+| `max_reference_images` | `2` | 0–4; `0` refuses references with 422 |
+| `resident` | `true` | keep a gRPC server with the 9B loaded between `standard` jobs |
+| `resident_idle_seconds` | `120` | stop it after this long without a job |
+| `grpc_server_path` | `gRPCServerCLI-macOS` next to `cli` | |
+| `grpc_port` | `7859` | loopback only |
+| `resident_cache_gb` | `18` | the server's weights cache (`-w`) |
+| `remote_port_flag` | `--remote-port` | the client's port flag (inferred, see below) |
+| `stop_grace_s` | `15` | Ctrl-C grace before SIGKILL |
 
 ### Coordination with other GPU servers
 
@@ -142,14 +167,36 @@ is never paused. Redirects are not followed, so a peer token is only ever sent t
 
 Time spent waiting shows up as `timings.coordination_seconds`.
 
-### Reference images (off until verified)
+### Reference images
 
-`--image` is passed to the CLI once per reference (the first is the main one) with `--strength
-<reference_strength>`. Whether FLUX.2 [klein] in draw-things-cli treats these as FLUX.2 reference editing or as
-img2img has **not been verified yet**, so `max_reference_images` defaults to `0`: `/v1/capabilities` then says
-`reference_images.max: 0` and any request with references gets `422 invalid_params`. Enable it only after
-checking on the Mac that references are honoured. References are normalised to upright RGB PNGs of at most
-2048 px on the longest side before they reach the engine.
+Each reference is passed to the CLI as `--image` (the first is the main one). Verified on the Mac: klein uses
+them as FLUX.2 references at the CLI's default strength 1.0, centre-cropped to the output aspect. klein-api never
+passes `--strength` (below 1.0 it turns into img2img and returns roughly the input). Up to
+`max_reference_images` (default 2; 3–4 work in principle but are unmeasured) are accepted; with `0`,
+`/v1/capabilities` says `reference_images.max: 0` and requests with references get `422 invalid_params`.
+References are normalised to upright RGB PNGs of at most 2048 px on the longest side first. They roughly double
+(one) or triple (two) the time per image.
+
+### Resident engine for `standard` jobs
+
+Every job used to load the 9B from disk. With `resident = true` (the default), the first `standard` job starts
+Draw Things' `gRPCServerCLI-macOS` (shipped next to `draw-things-cli`) as
+`gRPCServerCLI-macOS -a 127.0.0.1 -p <grpc_port> --no-tls -w <resident_cache_gb> <models_dir>` and runs its images
+through it (`draw-things-cli generate --remote …`); later `standard` jobs reuse the loaded model. Output is
+pixel-identical. The server holds ~9.6 GB while the 9B is resident, so it is stopped:
+
+- after `resident_idle_seconds` (120) without a job;
+- immediately when a `coordinate_with` server is seen busy while it idles (it is checked every
+  `coordination_poll_seconds`; vpipe-api and wan-api do not count Draw Things processes);
+- before a `draft` job (`draft` always runs one process per image: mixing models on one server made the next 9B
+  job slower than a cold one);
+- after a job that did not succeed (a canceled client may leave the server generating), and on shutdown.
+
+It always binds `127.0.0.1` (by default the server would listen on every interface without authentication); no
+setting changes that, and a port already answered by another program is never used. Before each job the server is
+checked; a dead one is restarted once, and if that fails the job runs one process per image (logged as a
+warning). A server left behind by a crashed klein-api is stopped at the next start (pid file in
+`data_dir/resident/`). Set `resident = false` to always run one process per image.
 
 ## API examples
 
@@ -186,18 +233,17 @@ curl -s "${AUTH[@]}" -X DELETE "$API/v1/jobs/$JOB"          # cancel (200 cancel
   errors never contain paths or internals. Job files are private to the server's user (umask 077). Do not add
   CORS: the API relies on browsers not being able to send cross-site JSON.
 
-## Not verified yet on the real Mac
+## Verification status
 
-The server was developed against a fake `draw-things-cli`. Check these with `doctor --smoke` and
-`KLEIN_API_REAL_TESTS=1 uv run pytest -m real -p no:cacheprovider --no-cov`:
+Checked on the target Mac with `doctor`, `doctor --smoke` and
+`KLEIN_API_REAL_TESTS=1 uv run pytest -m real -p no:cacheprovider --no-cov`: output line formats, PNG output at
+`--output`, references, and HTTP output pixel-identical to a direct CLI run. Still open:
 
-- the output line formats parsed in `src/klein_api/backends/drawthings_output.py` (progress
-  `Sampling... i / n`, `Sampling step time (n step(s)): avg x s`, `Wrote: <path>`, `Error: …`);
-- that `--output raw-<i>.png` is written exactly at that path, as PNG;
-- the six unmeasured generation sizes in `src/klein_api/backends/sizes.py`;
-- whether `--image` + `--strength 1` is reference editing for klein (references are off until then);
+- the generation sizes 640×1536, 704×1408, 1408×704, 1280×832 (and 832×1280, 896×1152, 1152×896 with klein);
+- 3–4 reference images (timing extrapolated);
 - that seeds above 2³¹−1 (`seed + i` with `seed` near the maximum) are accepted;
-- the draft model's text encoder file (not checked by `doctor`).
+- the resident mode as wired here: the client's port flag (`remote_port_flag`, assumed `--remote-port`) and
+  whether `--disable-preview` is accepted together with `--remote`.
 
 ## Development
 

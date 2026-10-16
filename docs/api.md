@@ -191,3 +191,6 @@ Coordination is checked only before a job starts; a running job is never paused.
   The aspect ratio is never distorted and there are no bars.
 - `draft` and `standard` map to engine settings chosen by the server (e.g. a smaller model for `draft`).
 - One job runs at a time.
+- Consecutive `standard` jobs may run faster than the first one: the server can keep the engine warm between
+  them and releases it when idle, before a `draft` job, or when another GPU server needs the memory. This
+  changes only timings; `estimate_seconds` and `typical_seconds` stay conservative (cold) values.

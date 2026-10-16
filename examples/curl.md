@@ -24,7 +24,7 @@ curl -s "${AUTH[@]}" -X POST "$API/v1/workflows/flux2-klein/jobs" \
 # Sending the same Idempotency-Key + body again returns the same job (200), never a duplicate.
 ```
 
-## With a reference image (only when `reference_images.max` > 0)
+## With a reference image
 
 ```sh
 jq -n --arg img "$(base64 -i character.png)" '{
@@ -35,7 +35,7 @@ jq -n --arg img "$(base64 -i character.png)" '{
 }' > body.json
 curl -s "${AUTH[@]}" -X POST "$API/v1/workflows/flux2-klein/jobs" \
   -H 'Content-Type: application/json' --data-binary @body.json
-# → 422 invalid_params while the server has reference images disabled (max 0)
+# → 202; more references than reference_images.max (default 2) → 422 invalid_params
 ```
 
 ## Poll, download, cancel

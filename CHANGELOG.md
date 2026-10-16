@@ -15,4 +15,10 @@ First version.
   reaped after a restart. Output parsing isolated in `drawthings_output.py`.
 - Coordination with other GPU servers (`coordinate_with`, `settle_seconds`): a job starts on an all-idle
   check, and not before `settle_seconds` after any server was last seen busy; unreachable servers count as idle (warning); peer tokens never logged, redirects not followed.
+- Resident engine for `standard` jobs (`resident`, default on): a loopback-only `gRPCServerCLI-macOS` keeps the
+  9B loaded between jobs (~19.5 s instead of ~26 s per image); stopped when idle, when a coordinated server is
+  busy, before draft jobs, after failed jobs and on shutdown; leftovers reaped after a crash.
+- Live findings applied: references are FLUX.2 references at strength 1.0 (default `max_reference_images` = 2,
+  `--strength` never passed), measured per-model sizes and conservative estimates, text-encoder `-tensordata`
+  checks, recorded CLI output fixtures, paths removed from engine error messages.
 - Job store/queue, security and process handling adapted from wan-api 0.1.0.
