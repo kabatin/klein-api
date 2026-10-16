@@ -133,7 +133,7 @@ class Coordinator:
                 return peer.name
         return None
 
-    def _check(self, job_id: str) -> str | None:
+    def check(self, job_id: str | None = None) -> str | None:
         """One check of every peer; a busy answer is remembered with the time it was seen."""
         busy = self.busy_peer(job_id)
         if busy is not None:
@@ -157,7 +157,7 @@ class Coordinator:
         if not self.peers:
             return True
         while True:
-            busy = self._check(job_id)
+            busy = self.check(job_id)
             if busy is not None:
                 on_waiting(busy)
                 if not sleep(self.poll_seconds):

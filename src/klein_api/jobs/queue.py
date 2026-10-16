@@ -146,6 +146,9 @@ class JobQueue:
 
     # -- lifecycle -----------------------------------------------------------------
     def start(self) -> None:
+        leftover = self._backend.startup()
+        if leftover is not None:
+            event(log, "backend.leftover_stopped", level=logging.WARNING, cleanup=leftover)
         requeue, interrupted = self._store.recover()
         for record in interrupted:
             cleanup = self._backend.recover(self._store.job_dir(record.id))
@@ -179,6 +182,10 @@ class JobQueue:
             self._cond.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=timeout_s)
+        try:
+            self._backend.shutdown()
+        except Exception:
+            log.exception("backend shutdown failed")
 
     # -- API-facing ----------------------------------------------------------------
     @property

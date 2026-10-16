@@ -43,6 +43,15 @@ FAKE_CLI = textwrap.dedent(
     def opt(name, default=None):
         return args[args.index(name) + 1] if name in args else default
     mode = os.environ.get("FAKE_DT_MODE", "ok")
+    if "--remote" in args:  # talk to the resident server, like the real client must
+        import socket
+        try:
+            socket.create_connection(
+                (opt("--remote-url"), int(opt("--remote-port"))), timeout=2
+            ).close()
+        except OSError:
+            print("Error: could not connect to the remote server", flush=True)
+            sys.exit(1)
     if not sys.stdout.isatty():  # like the real CLI: a pipe gets everything at exit
         sys.stdout = open(sys.stdout.fileno(), "w", buffering=1 << 20, closefd=False)
         _print = print

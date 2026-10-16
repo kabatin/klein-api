@@ -307,6 +307,7 @@ def test_serve_and_config_with_peers(
     assert cli.main(["serve"]) == 0
     out = capsys.readouterr().out
     assert "waits for: vpipe-api" in out and "peer-secret-value" not in out
+    assert env.peer_check is not None  # the engine is told when a peer gets busy
     assert cli.main(["config"]) == 0
     out = capsys.readouterr().out
     assert "name = vpipe-api" in out and "token = ********" in out

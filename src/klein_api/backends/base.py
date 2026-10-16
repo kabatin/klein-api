@@ -116,3 +116,17 @@ class KleinBackend(ABC):
     def recover(self, run_dir: Path) -> str | None:
         """Clean up after a run the server lost track of (restart). Returns what was done."""
         return None
+
+    def startup(self) -> str | None:
+        """Called once when the queue starts: clean up what a crashed server left (beyond
+        single runs). Returns what was done."""
+        return None
+
+    def shutdown(self) -> None:
+        """Called when the queue stops: release long-lived engine resources."""
+        return None
+
+    def set_peer_check(self, check: Callable[[], bool] | None) -> None:
+        """``check()`` is True while another GPU server on the machine is busy (backends that
+        hold GPU memory between jobs give it back then)."""
+        return None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -53,6 +53,8 @@ class FakeKleinBackend(KleinBackend):
         self.calls: list[GenerationRequest] = []
         self.recovered: list[Path] = []
         self.healthy = True
+        self.lifecycle: list[str] = []
+        self.peer_check: Callable[[], bool] | None = None
 
     @property
     def max_reference_images(self) -> int:
@@ -71,6 +73,16 @@ class FakeKleinBackend(KleinBackend):
     def recover(self, run_dir: Path) -> str | None:
         self.recovered.append(run_dir)
         return "nothing to stop"
+
+    def startup(self) -> str | None:
+        self.lifecycle.append("startup")
+        return "stopped a leftover engine server"
+
+    def shutdown(self) -> None:
+        self.lifecycle.append("shutdown")
+
+    def set_peer_check(self, check: Callable[[], bool] | None) -> None:
+        self.peer_check = check
 
     def generate(
         self,

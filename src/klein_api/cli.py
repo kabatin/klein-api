@@ -77,6 +77,9 @@ def cmd_serve(settings: Settings, args: argparse.Namespace) -> int:
         settle_seconds=settings.settle_seconds,
         poll_seconds=settings.coordination_poll_seconds,
     )
+    if coordinator.peers:
+        # an engine keeping a model resident gives the memory back when a peer gets busy
+        backend.set_peer_check(lambda: coordinator.check() is not None)
     queue = JobQueue(
         store,
         registry,
