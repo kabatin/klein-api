@@ -237,13 +237,13 @@ curl -s "${AUTH[@]}" -X DELETE "$API/v1/jobs/$JOB"          # cancel (200 cancel
 
 Checked on the target Mac with `doctor`, `doctor --smoke` and
 `KLEIN_API_REAL_TESTS=1 uv run pytest -m real -p no:cacheprovider --no-cov`: output line formats, PNG output at
-`--output`, references, and HTTP output pixel-identical to a direct CLI run. Still open:
+`--output`, references, and HTTP output pixel-identical to a direct CLI run. The resident mode as wired here is
+checked too: the client's port flag `--remote-port`, and `--disable-preview` accepted together with `--remote`
+(standard 1344×768 about 19.5 s resident, pixel-identical to the direct run). Still open:
 
 - the generation sizes 640×1536, 704×1408, 1408×704, 1280×832 (and 832×1280, 896×1152, 1152×896 with klein);
 - 3–4 reference images (timing extrapolated);
-- that seeds above 2³¹−1 (`seed + i` with `seed` near the maximum) are accepted;
-- the resident mode as wired here: the client's port flag (`remote_port_flag`, assumed `--remote-port`) and
-  whether `--disable-preview` is accepted together with `--remote`.
+- that seeds above 2³¹−1 (`seed + i` with `seed` near the maximum) are accepted.
 
 ## Development
 
