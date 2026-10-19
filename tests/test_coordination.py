@@ -127,6 +127,62 @@ def test_probe_of_a_bad_body_or_dead_server(fake_peer: FakePeer) -> None:
         probe_health(dead, timeout_s=1)
 
 
+class RawPeer:
+    """A TCP server that answers every connection with ``reply`` and closes it."""
+
+    def __init__(self, reply: bytes) -> None:
+        import socket
+
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen()
+        self.url = f"http://127.0.0.1:{self.sock.getsockname()[1]}/v1/health"
+        self.reply = reply
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(4096)
+                conn.sendall(self.reply)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        b"SSH-2.0-OpenSSH_9.9\r\n",  # not HTTP at all: BadStatusLine
+        b'HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{"running": 0',  # cut short
+    ],
+)
+def test_probe_of_a_peer_that_does_not_answer_http_properly(reply: bytes) -> None:
+    raw = RawPeer(reply)
+    peer = PeerServer(name="odd", health_url=raw.url, token=PEER_TOKEN)
+    try:
+        with pytest.raises(PeerUnreachableError) as info:
+            probe_health(peer, timeout_s=2)
+        assert PEER_TOKEN not in str(info.value)
+    finally:
+        raw.sock.close()
+
+
+def test_probe_never_goes_through_a_proxy(
+    fake_peer: FakePeer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The token must only ever reach the peer's own health_url, never a proxy, even with one
+    in the environment when the opener is built (as at server start)."""
+    from klein_api.jobs import coordination
+
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setattr(coordination, "_OPENER", coordination._build_opener())
+    assert probe_health(fake_peer.peer()).idle
+    assert fake_peer.headers_seen[0]["Authorization"] == f"Bearer {PEER_TOKEN}"
+
+
 # -- settings ----------------------------------------------------------------------------
 
 

@@ -12,6 +12,7 @@ logged; redirects are not followed, so a token never reaches another host.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import threading
@@ -54,7 +55,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # a 3xx is then raised as HTTPError instead of being followed
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+def _build_opener() -> urllib.request.OpenerDirector:
+    """No proxy ever, whatever the environment or system settings say (the peer token must only
+    reach health_url), and no redirects."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+_OPENER = _build_opener()
 
 
 def probe_health(peer: PeerServer, timeout_s: float = PROBE_TIMEOUT_S) -> PeerHealth:
@@ -68,7 +75,7 @@ def probe_health(peer: PeerServer, timeout_s: float = PROBE_TIMEOUT_S) -> PeerHe
             body = response.read(MAX_HEALTH_BYTES + 1)
     except urllib.error.HTTPError as exc:
         raise PeerUnreachableError(f"HTTP {exc.code}") from None
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise PeerUnreachableError(type(exc).__name__) from None
     if len(body) > MAX_HEALTH_BYTES:
         raise PeerUnreachableError("health response too large")
