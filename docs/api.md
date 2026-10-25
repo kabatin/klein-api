@@ -170,8 +170,10 @@ As in wan-api: `200` `canceled`, `202` while the engine is stopping, `409` if al
 
 ## Coordination with other GPU servers
 
-The Mac has one GPU and one pool of unified memory. Other servers on it (vpipe-api, wan-api) do not
-know about klein-api. When `coordinate_with` is configured (a list of `{name, health_url, token}`),
+The Mac has one GPU and one pool of unified memory. wan-api does not know about klein-api. vpipe-api
+(0.1.4 and later), ace-step-api and sfx-api can list it in their own `coordinate_with`; each of them
+yields while it waits (`waiting_for_peer`, `waiting: 0`), and klein-api does not, so klein-api goes
+first. When `coordinate_with` is configured (a list of `{name, health_url, token}`),
 the job at the head of the queue starts only after a check in which **every** listed server reports
 idle: `running == 0 && waiting == 0` (and `outside_runs == 0` when present). The server remembers the
 time it last saw any listed server busy (`running`, `waiting` or `outside_runs` > 0). If no server has
