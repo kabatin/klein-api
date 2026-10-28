@@ -218,9 +218,11 @@ def test_generate_passes_every_setting_explicitly(
     assert "Sampling" in (run_dir / "backend-0.log").read_text()
 
 
-def test_z_image_turbo_runs_with_the_models_recommended_settings(
+def test_z_image_turbo_passes_its_recommended_settings_explicitly(
     backend: DrawThingsCliBackend, tmp_path: Path, calls: Path
 ) -> None:
+    """Offline, without a cached community config, the CLI would fall back to its generic
+    defaults (20 steps, CFG 4.5): the recommended settings must be on the command line."""
     run_dir = tmp_path / "job"
     req = request(model="z-image-turbo", aspect_ratio=1.0)
     result = backend.generate(req, run_dir, timeout_s=60, cancel=threading.Event())
@@ -229,9 +231,20 @@ def test_z_image_turbo_runs_with_the_models_recommended_settings(
     flags = flags_of(argv)
     assert flags["--model"] == "z_image_turbo_1.0_i8x.ckpt"
     assert (flags["--width"], flags["--height"]) == ("1024", "1024")
-    # distilled: the CLI applies the model's own steps and guidance
-    assert "--steps" not in argv and "--cfg" not in argv
+    assert (flags["--steps"], flags["--cfg"]) == ("8", "1")
+    # community-models configs/z-image-turbo-1.0: UniPC Trailing (17), shift 3
+    assert json.loads(flags["--config-json"]) == {
+        "sampler": 17,
+        "shift": 3,
+        "resolutionDependentShift": False,
+        "seedMode": 2,
+    }
     assert {"--local", "--offline", "--no-download-missing", "--disable-preview"} <= set(argv)
+
+
+def test_klein_passes_no_config_json(backend: DrawThingsCliBackend, tmp_path: Path, calls) -> None:
+    assert backend.generate(request(), tmp_path / "job", timeout_s=60, cancel=threading.Event()).ok
+    assert "--config-json" not in json.loads(calls.read_text().splitlines()[0])
 
 
 def test_count_runs_one_process_per_image_with_seed_plus_i(

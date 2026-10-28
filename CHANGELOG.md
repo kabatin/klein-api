@@ -10,7 +10,8 @@
   without removing keys (0600, atomic, token never printed), and with `--service` writes and loads a
   LaunchAgent, waits for `/v1/health` and reports the macOS "access other apps' data" dialog as `needs_human`.
 - Workflow `z-image-turbo`: Z Image Turbo (Apache-2.0) text to image, 1–4 PNGs at the exact size; text encoder
-  and VAE from Draw Things' model definition, the model's recommended steps/CFG. Timing measured (33 s per
+  and VAE from Draw Things' model definition, the model's recommended settings (8 steps, CFG 1, UniPC Trailing) passed explicitly so an offline Mac without
+  Draw Things' cached catalog does not fall back to generic defaults. Timing measured (33 s per
   image); memory and non-square sizes not yet.
 - `/v1/health` gains `workflows[id].{available, reason}`; a submit to a workflow (or `flux2-klein` tier) whose
   model is missing gets `503 workflow_unavailable`. `serve` starts while any model is installed; `doctor`

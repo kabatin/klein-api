@@ -2,8 +2,8 @@
 
 Same delivery as ``flux2-klein`` — generated at a ~1 MP size in multiples of 64 closest to the
 requested aspect ratio, then cover-cropped to the exact size as verified 8-bit RGB PNG — but
-text only: one model, no quality tiers, no reference images. Steps and guidance are the
-model's recommended settings (distilled), never chosen by the client.
+text only: one model, no quality tiers, no reference images. Steps, guidance and sampler are
+the model's recommended settings (distilled), set by the backend, never by the client.
 
 Measured on the target Mac: 33 s per image (56 s for the very first run). Peak memory and the
 non-square sizes are not measured yet; the size table is the one verified with FLUX.2 [klein].

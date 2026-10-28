@@ -7,8 +7,10 @@ Facts this module relies on (draw-things-cli v26.1011.0 on the target Mac, 2026-
   file is downloaded mid-job;
 - width and height must be multiples of 64 (see :mod:`klein_api.backends.sizes`);
 - FLUX.2 [klein] is distilled: 4 steps, CFG 1 (never raised), passed explicitly;
-- Z Image Turbo is distilled too: no ``--steps`` / ``--cfg``, so the CLI applies the model's
-  recommended settings (Draw Things' model note: 8 steps, trailing sampler);
+- Z Image Turbo is distilled too: its recommended settings (community-models
+  ``configs/z-image-turbo-1.0``: 8 steps, CFG 1, UniPC Trailing, shift 3) are passed explicitly.
+  The CLI would only find them online or in a cached catalog; offline on a fresh Mac it falls
+  back to its generic defaults (no per-model override for Z Image);
 - ``--seed`` is deterministic and ``--output`` writes a PNG;
 - ``--image`` (repeatable, the first is the main one) is a FLUX.2 reference at the default
   strength 1.0, centre-cropped by the CLI to the output aspect. ``--strength`` is never
@@ -21,6 +23,7 @@ Output line formats are parsed in :mod:`klein_api.backends.drawthings_output`.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -72,12 +75,13 @@ class Recipe:
     # files the model needs besides itself (checked by `doctor` / `serve`); a quantised text
     # encoder's .ckpt is only an index (0.4 MB): its weights are in the -tensordata file
     dependencies: tuple[str, ...]
-    # None: not passed, the CLI uses the model's recommended value
-    steps: int | None
-    cfg: float | None
+    steps: int
+    cfg: float
     # per 1024x1024 image, cold process (model load included): measured 25.9 s (9B), 14 s
     # (4B) and 33 s (Z Image Turbo; 56 s for the very first run), rounded up
     seconds_per_image: float
+    # more of the model's recommended settings, as ``--config-json`` (JSGenerationConfiguration)
+    config_json: str | None = None
 
     @property
     def files(self) -> tuple[str, ...]:
@@ -109,9 +113,14 @@ RECIPES: dict[ModelId, Recipe] = {
         label="Z Image Turbo model",
         model="z_image_turbo_1.0_i8x.ckpt",
         dependencies=("qwen_3_vl_4b_instruct_q8p.ckpt", "flux_1_vae_f16.ckpt"),
-        steps=None,
-        cfg=None,
+        steps=8,
+        cfg=1.0,
         seconds_per_image=34.0,
+        # sampler 17 = UniPCTrailing (SamplerType in DataModels/config.fbs)
+        config_json=json.dumps(
+            {"sampler": 17, "shift": 3, "resolutionDependentShift": False, "seedMode": 2},
+            separators=(",", ":"),
+        ),
     ),
 }
 # Size timings are only measured with the 9B model; the others are assumed to scale the same way.
@@ -287,11 +296,9 @@ class DrawThingsCliBackend(KleinBackend):
         references: list[str] = []
         for path in request.references:
             references += ["--image", str(path)]  # never --strength: < 1 means img2img
-        sampling: list[str] = []
-        if recipe.steps is not None:
-            sampling += ["--steps", str(recipe.steps)]
-        if recipe.cfg is not None:
-            sampling += ["--cfg", f"{recipe.cfg:g}"]
+        sampling = ["--steps", str(recipe.steps), "--cfg", f"{recipe.cfg:g}"]
+        if recipe.config_json is not None:
+            sampling += ["--config-json", recipe.config_json]
         return [
             cli,
             "generate",

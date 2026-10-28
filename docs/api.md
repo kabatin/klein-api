@@ -224,7 +224,7 @@ Same as `flux2-klein` with fewer fields: `prompt`, `output`, `seed`, `count` (sa
 
 - Z Image Turbo (Tongyi-MAI, Apache-2.0): text to image, delivered exactly like `flux2-klein` (PNG,
   8-bit sRGB, no alpha, exact size, cover + centre crop from a ~1 MP generation size).
-- Steps and guidance are the model's recommended settings, chosen by the engine.
+- Steps, guidance and sampler are the model's recommended settings (8 steps, CFG 1), set by the server.
 - Measured: 33 s per image (56 s the very first run). Its generation sizes reuse the table verified with
   FLUX.2 [klein]; only the timing above is measured for this model, its peak memory is not.
 - It never shares the resident engine with `standard` jobs: a `z-image-turbo` job first releases it.
