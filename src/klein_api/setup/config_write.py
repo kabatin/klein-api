@@ -11,7 +11,6 @@ tables, str / int / float / bool / list of str).
 from __future__ import annotations
 
 import contextlib
-import json
 import math
 import os
 import re
@@ -30,7 +29,6 @@ from klein_api.settings import (
     DEFAULT_CONFIG_PATH,
     ENV_PREFIX,
     PeerServer,
-    Settings,
 )
 from klein_api.setup.errors import SetupError
 
@@ -39,8 +37,36 @@ _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
 # -- TOML ----------------------------------------------------------------------------------
+_ESCAPES = {
+    '"': '\\"',
+    "\\": "\\\\",
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
+def _string(value: str) -> str:
+    """A TOML basic string: non-ASCII kept as is; control characters and DEL escaped (TOML
+    forbids them raw); a lone surrogate cannot be written as UTF-8 and is refused."""
+    out: list[str] = []
+    for char in value:
+        code = ord(char)
+        if char in _ESCAPES:
+            out.append(_ESCAPES[char])
+        elif code < 0x20 or code == 0x7F:
+            out.append(f"\\u{code:04X}")
+        elif 0xD800 <= code <= 0xDFFF:
+            raise TypeError("strings with lone surrogates cannot be written to TOML")
+        else:
+            out.append(char)
+    return '"' + "".join(out) + '"'
+
+
 def _key(name: str) -> str:
-    return name if _BARE_KEY.fullmatch(name) else json.dumps(name)
+    return name if _BARE_KEY.fullmatch(name) else _string(name)
 
 
 def _value(value: Any) -> str:
@@ -53,10 +79,9 @@ def _value(value: Any) -> str:
             raise TypeError("only finite floats are supported")
         return repr(value)
     if isinstance(value, str):
-        # JSON's escapes (\" \\ \n \t \uXXXX) are valid in TOML basic strings
-        return json.dumps(value)
+        return _string(value)
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return "[" + ", ".join(json.dumps(item) for item in value) + "]"
+        return "[" + ", ".join(_string(item) for item in value) + "]"
     raise TypeError(f"cannot write {type(value).__name__} to TOML")
 
 
@@ -107,13 +132,35 @@ def coord_token_env(name: str) -> str:
     return f"{ENV_PREFIX}COORD_TOKEN_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
 
 
+def check_lan_token(env: Mapping[str, str]) -> None:
+    """``<PREFIX>_TOKEN``, if set, must pass the server's own token rule (never echoed)."""
+    from_env = env.get(ENV_PREFIX + "TOKEN", "").strip()
+    if from_env and not _TOKEN.fullmatch(from_env):
+        raise SetupError(
+            f"{ENV_PREFIX}TOKEN must be at least 32 printable ASCII characters without spaces"
+        )
+
+
+def peer_entry(name: str, url: str, env: Mapping[str, str]) -> dict[str, Any]:
+    """A validated ``[[coordinate_with]]`` table (token from the environment, never echoed)."""
+    peer: dict[str, Any] = {"name": name, "health_url": url}
+    token = env.get(coord_token_env(name), "").strip()
+    if token:
+        peer["token"] = token
+    try:
+        PeerServer.model_validate(peer)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
+        )
+        raise SetupError(f"--coordinate-with {name}: {problems}") from exc
+    return peer
+
+
 def _token(existing: Any, env: Mapping[str, str]) -> str:
+    check_lan_token(env)
     from_env = env.get(ENV_PREFIX + "TOKEN", "").strip()
     if from_env:
-        if not _TOKEN.fullmatch(from_env):
-            raise SetupError(
-                f"{ENV_PREFIX}TOKEN must be at least 32 printable ASCII characters without spaces"
-            )
         return from_env
     if isinstance(existing, str) and existing:
         return existing
@@ -137,52 +184,29 @@ def merged(current: Mapping[str, Any], request: ConfigRequest, env: Mapping[str,
         data["host"] = LAN_HOST
         data["token"] = _token(data.get("token"), env)
     peers = [dict(peer) for peer in data.get("coordinate_with", [])]
-    known = {peer.get("name") for peer in peers}
     for name, url in request.coordinate_with:
-        if name in known:
-            continue
-        peer: dict[str, Any] = {"name": name, "health_url": url}
-        token = env.get(coord_token_env(name), "").strip()
-        if token:
-            peer["token"] = token
-        try:
-            PeerServer.model_validate(peer)
-        except ValidationError as exc:
-            problems = "; ".join(str(err["msg"]) for err in exc.errors())
-            raise SetupError(f"--coordinate-with {name}: {problems}") from exc
-        peers.append(peer)
-        known.add(name)
+        wanted = peer_entry(name, url, env)
+        index = next((i for i, p in enumerate(peers) if p.get("name") == name), None)
+        if index is None:
+            peers = [*peers, wanted]
+        else:
+            # same name: take the new URL, and the token only when one is given
+            peers = [*peers[:index], {**peers[index], **wanted}, *peers[index + 1 :]]
     if peers:
         data["coordinate_with"] = peers
     return data
 
 
-def _validate(data: Mapping[str, Any]) -> None:
-    expanded = {
-        k: (str(Path(v).expanduser()) if isinstance(v, str) and v.startswith("~") else v)
-        for k, v in data.items()
-    }
-    try:
-        Settings.model_validate(expanded)
-    except ValidationError as exc:
-        # never echo the input: it may hold a token
-        problems = "; ".join(
-            f"{'.'.join(str(p) for p in err['loc']) or 'settings'}: {err['msg']}"
-            for err in exc.errors()
-        )
-        raise SetupError(f"the config would be invalid: {problems}") from exc
-
-
 def write_config(
     path: Path, request: ConfigRequest, env: Mapping[str, str] | None = None
 ) -> tuple[dict[str, Any], bool]:
-    """Merge and write; returns the resulting data and whether the file changed."""
+    """Merge and write; returns the resulting data and whether the file changed. The rest of
+    the file is not validated: setup must also repair a config the server would reject."""
     environ = os.environ if env is None else env
     current = read_config(path)
     data = merged(current, request, environ)
     if data == current:
         return data, False
-    _validate(data)
     text = dumps(data)
     if tomllib.loads(text) != data:  # pragma: no cover - the emitter's own guarantee
         raise SetupError("internal error: the TOML writer does not round-trip")
@@ -191,6 +215,8 @@ def write_config(
 
 
 def _atomic_write(path: Path, text: str) -> None:
+    if path.is_symlink():
+        path = path.resolve()  # replace the target, keep the link (e.g. dotfiles)
     parent = path.parent
     created = not parent.exists()
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)

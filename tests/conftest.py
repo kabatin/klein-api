@@ -30,3 +30,12 @@ def make_png(
 
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
+
+@pytest.fixture
+def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A fake machine for `klein-api setup` (see tests/setup_world.py)."""
+    from tests.setup_world import World, use_small_assets
+
+    use_small_assets(monkeypatch, tmp_path)
+    return World(tmp_path)

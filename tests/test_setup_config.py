@@ -106,14 +106,14 @@ def test_a_weak_token_from_the_environment_is_refused_without_echoing_it(
     assert not path.exists()
 
 
-def test_coordinate_with_adds_peers_once_with_their_token(tmp_path: Path) -> None:
+def test_coordinate_with_adds_or_updates_peers_by_name(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text('[[coordinate_with]]\nname = "vpipe-api"\nhealth_url = "http://a/v1/health"\n')
     peers = (("vpipe-api", "http://b/v1/health"), ("wan-api", "http://127.0.0.1:8766/v1/health"))
     env = {coord_token_env("wan-api"): "peer-token"}
     data, _ = write_config(path, ConfigRequest(coordinate_with=peers), env=env)
     assert data["coordinate_with"] == [
-        {"name": "vpipe-api", "health_url": "http://a/v1/health"},
+        {"name": "vpipe-api", "health_url": "http://b/v1/health"},  # the new URL
         {"name": "wan-api", "health_url": "http://127.0.0.1:8766/v1/health", "token": "peer-token"},
     ]
     assert coord_token_env("wan-api") == "KLEIN_API_COORD_TOKEN_WAN_API"
@@ -135,3 +135,15 @@ def test_a_broken_config_file_is_reported(tmp_path: Path) -> None:
     path.write_text("port = = 1")
     with pytest.raises(SetupError, match="cannot read config file"):
         write_config(path, ConfigRequest(port=1), env={})
+
+
+def test_strings_with_del_and_non_ascii_round_trip() -> None:
+    data = {"a": "x\x7fy", "b": "日本語 ü", "c": "\x00\x1f\b\f\r"}
+    text = dumps(data)
+    assert "\x7f" not in text and "日本語" in text  # DEL escaped, non-ASCII kept as is
+    assert tomllib.loads(text) == data
+
+
+def test_a_lone_surrogate_is_refused() -> None:
+    with pytest.raises(TypeError):
+        dumps({"a": "x\ud800"})
