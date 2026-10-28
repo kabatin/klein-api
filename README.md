@@ -1,12 +1,13 @@
 # klein-api
 
-**Run FLUX.2 [klein] text/reference-to-image on your Apple Silicon Mac as an HTTP job API.**
+**Run FLUX.2 [klein] text/reference-to-image (and Z Image Turbo text-to-image) on your Apple Silicon Mac
+as an HTTP job API.**
 
-`klein-api` is a small, safe job server around FLUX.2 [klein], driven headless through
+`klein-api` is a small, safe job server around FLUX.2 [klein] and Z Image Turbo, driven headless through
 [`draw-things-cli`](https://drawthings.ai). Send a prompt and an exact output size, get back 1–4 PNGs:
 
 ```
-POST /v1/workflows/flux2-klein/jobs   → 202 {id}
+POST /v1/workflows/flux2-klein/jobs   → 202 {id}      (or /v1/workflows/z-image-turbo/jobs)
 GET  /v1/jobs/{id}                     → queued → running (progress) → succeeded
 GET  /v1/jobs/{id}/output?index=N      → image/png
 ```
@@ -35,14 +36,19 @@ The full contract is [docs/api.md](docs/api.md).
 
 - Apple Silicon Mac, macOS 14+. A `standard` image peaks at ~10 GB of memory.
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/).
-- `draw-things-cli` (measured with v26.1011.0) and the FLUX.2 [klein] model files:
+- `draw-things-cli` v26.1011.0 from [its GitHub release](https://github.com/drawthingsai/draw-things-community/releases/tag/v26.1011.0)
+  (Homebrew's build is older and lacks `--local` and these models) and the model files of what you want to
+  serve. Each row is one `klein-api setup` component; any subset works:
 
-| tier | model file | also needs |
-|---|---|---|
-| `standard` | `flux_2_klein_9b_i8x.ckpt` | `qwen_3_8b_q8p.ckpt` + `qwen_3_8b_q8p.ckpt-tensordata`, `flux_2_vae_f16.ckpt` |
-| `draft` | `flux_2_klein_4b_i8x.ckpt` | `qwen_3_4b_q8p.ckpt` + `qwen_3_4b_q8p.ckpt-tensordata`, `flux_2_vae_f16.ckpt` |
+| component | serves | model file | also needs | download | weights licence |
+|---|---|---|---|---|---|
+| `klein-9b` | `flux2-klein` `standard` | `flux_2_klein_9b_i8x.ckpt` | `qwen_3_8b_q8p.ckpt` + `qwen_3_8b_q8p.ckpt-tensordata`, `flux_2_vae_f16.ckpt` | 17.8 GB | non-commercial (outputs may be used) |
+| `klein-4b` | `flux2-klein` `draft` | `flux_2_klein_4b_i8x.ckpt` | `qwen_3_4b_q8p.ckpt` + `qwen_3_4b_q8p.ckpt-tensordata`, `flux_2_vae_f16.ckpt` | 8.6 GB | Apache-2.0 |
+| `z-image-turbo` | `z-image-turbo` | `z_image_turbo_1.0_i8x.ckpt` | `qwen_3_vl_4b_instruct_q8p.ckpt`, `flux_1_vae_f16.ckpt` | 10.9 GB | Apache-2.0 |
 
-(A quantised text encoder's `.ckpt` is only a 0.4 MB index; its weights are in the `-tensordata` file.)
+(A quantised text encoder's `.ckpt` is only a 0.4 MB index; its weights are in the `-tensordata` file, which the
+CLI writes after the download. Z Image Turbo's text encoder and VAE are the ones Draw Things' own model
+definition names; whether that encoder also leaves a `-tensordata` file is not checked yet.)
 
 Measured on the target Mac (MacBook Pro M5, 32 GB, draw-things-cli v26.1011.0, one cold process per image):
 
@@ -50,17 +56,48 @@ Measured on the target Mac (MacBook Pro M5, 32 GB, draw-things-cli v26.1011.0, o
 |---|---|---|---|---|---|---|
 | 9B (`standard`) | 25.9 s | 30.4 s | 26.0 s | 35.1 s | 50.3 s | 72.9 s |
 | 4B (`draft`) | ~14 s | | | | | |
+| Z Image Turbo | 33 s (56 s the very first run) | | | | | |
 | 9B, resident server, next image | 19.3–19.6 s | | | | 38.8 s | |
 
-Wide sizes are slower than their pixel count; estimates never assume less than the measured time.
+Wide sizes are slower than their pixel count; estimates never assume less than the measured time. Peak memory:
+9B 10.4 GB, 4B 4.9 GB, Z Image Turbo not measured yet. Z Image Turbo's non-square sizes are not checked yet
+(it uses the same ~1 MP size table).
 
 ## Setup on the Mac
 
 ```sh
 uv tool install git+https://github.com/kabatin/klein-api     # or: uv sync && uv run klein-api …
+klein-api setup --check                    # what is installed, what is missing, how much it would download
+klein-api setup --models klein-4b,z-image-turbo   # asks once, then installs (add --yes to skip the question)
+klein-api setup --service                  # … and run `serve` at login (launchd)
 ```
 
-The defaults expect:
+`setup` downloads the pinned `draw-things-cli` + `gRPCServerCLI-macOS` (SHA-256 checked) into
+`~/.local/opt/klein-api/draw-things-cli/v26.1011.0/` (`--prefix` to change; an existing pinned CLI at the
+default path below is reused), fetches the models with the CLI's own
+`draw-things-cli models ensure --model FILE --models-dir DIR` (resumed if it stalls or is interrupted),
+checks free disk space first, and adds the keys it needs to `~/.config/klein-api/config.toml` without removing
+anything (mode 0600). Running it again does nothing that is already done.
+
+| option | |
+|---|---|
+| `--models a,b` | components (default: all three); an unknown id exits with 2 |
+| `--check` | change nothing; report machine, per-component state and download bytes |
+| `--yes` | do not ask (without a terminal and without `--yes`, nothing is downloaded: exit 3) |
+| `--json` | one JSON object on the last line of stdout (progress stays on stderr) |
+| `--lan` | `host = "0.0.0.0"` with a token (`KLEIN_API_TOKEN` if set, else the existing one, else a new one; never printed) |
+| `--port N` | `port = N` |
+| `--coordinate-with NAME=HEALTH_URL` | add a `[[coordinate_with]]` peer (token from `KLEIN_API_COORD_TOKEN_<NAME>`) |
+| `--service` | write `~/Library/LaunchAgents/com.github.kabatin.klein-api.plist`, load it, wait for `/v1/health` |
+| `--label-suffix S` | a second service beside the real one (testing) |
+
+Exit codes: 0 done, 1 failed, 2 bad arguments, 3 a person has to act (confirm the download, or the item below).
+
+**After `--service`, look at the Mac's screen.** The first time the service reads Draw Things' Models folder
+(inside another app's container), macOS asks whether klein-api may access data from other apps. Until someone
+approves, jobs hang; `setup` reports this as `needs_human`.
+
+Or set it up by hand. The defaults expect:
 
 - the CLI at `~/.local/opt/draw-things-cli/v26.1011.0/draw-things-cli`
 - the models in `~/Library/Containers/com.liuliu.draw-things/Data/Documents/Models` (the Draw Things app's
@@ -106,7 +143,9 @@ klein-api doctor --smoke   # + one real draft image through the workflow (stop t
 klein-api serve            # http://127.0.0.1:8767   (OpenAPI: /openapi.json, docs: /docs)
 ```
 
-`serve` checks the CLI and the model files first and exits with a clear message if it cannot generate.
+`serve` checks the CLI and the model files first and exits with a clear message if nothing can be generated.
+A workflow (or `flux2-klein` tier) whose model is not installed answers `503 workflow_unavailable`; `/v1/health`
+lists `workflows[id].available`.
 
 ### Run at login (launchd)
 
@@ -117,6 +156,8 @@ cp examples/com.github.kabatin.klein-api.plist ~/Library/LaunchAgents/   # then 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.kabatin.klein-api.plist
 launchctl bootout gui/$(id -u)/com.github.kabatin.klein-api                # stop
 ```
+
+(`klein-api setup --service` writes this file for you.)
 
 Logs are JSON lines on stderr (job id, state transitions, queue/coordination/backend/postprocess/total seconds,
 failure category) — never prompts, images or tokens.
@@ -257,4 +298,5 @@ KLEIN_API_REAL_TESTS=1 uv run pytest -m real --no-cov   # on the Mac with the en
 ## License
 
 Apache-2.0 (this repository; it ships no weights). draw-things-cli is GPL-3.0 and is run as a separate program,
-not linked. Check the license of every model you download before using its output.
+not linked. Check the license of every model you download before using its output: the FLUX.2 [klein] 9B weights
+are non-commercial (their outputs may be used), the 4B and Z Image Turbo weights are Apache-2.0.

@@ -6,8 +6,9 @@ Request and response bodies are JSON (UTF-8) unless noted. The machine-readable 
 (same job lifecycle, error envelope, `429` + `Retry-After`, `Idempotency-Key`), so a client that drives
 them needs only a different workflow id, body and output type.
 
-The engine is FLUX.2 [klein] through `draw-things-cli` on Apple Silicon. **Nothing about the engine
-(model files, steps, CFG, sampler, quantization) is part of this contract.**
+The engines are FLUX.2 [klein] (workflow `flux2-klein`) and Z Image Turbo (workflow `z-image-turbo`)
+through `draw-things-cli` on Apple Silicon. **Nothing about the engine (model files, steps, CFG,
+sampler, quantization) is part of this contract.**
 
 ## Authentication
 
@@ -41,16 +42,26 @@ Identical to wan-api:
 | 429 | `busy` | true | the GPU slot and the waiting queue are full. `Retry-After` header (seconds) is set |
 | 500 | `internal` | true | unexpected server error (details only in the server log) |
 | 503 | `insufficient_storage` | true | less than 2 GB free in `data_dir`; nothing was queued |
+| 503 | `workflow_unavailable` | false | this workflow's (or this `quality` tier's) engine or model files are not installed; the message says which (`/v1/health` → `workflows`); other workflows keep working |
 
 ## Endpoints
 
 ### `GET /healthz` and `GET /v1/health`
 
 ```json
-{ "status": "ok", "version": "0.1.0", "running": 1, "waiting": 0, "max_waiting": 2 }
+{ "status": "ok", "version": "0.2.0", "running": 1, "waiting": 0, "max_waiting": 2,
+  "workflows": {
+    "flux2-klein":   { "available": true,  "reason": "draft: model files missing: flux_2_klein_4b_i8x.ckpt" },
+    "z-image-turbo": { "available": false, "reason": "model files missing: z_image_turbo_1.0_i8x.ckpt" }
+  } }
 ```
 
 `503` with `"status": "degraded"` if the worker has stopped.
+
+`workflows` (added in 0.2.0; the other fields are unchanged) has one entry per workflow: `available` —
+it can take jobs (for `flux2-klein`: at least one `quality` tier can); `reason` — why it, or one of its
+tiers, cannot run (`null` when everything can; never a path). A submit that cannot run gets
+`503 workflow_unavailable`. One unavailable workflow does not make `status` `degraded`.
 
 ### `GET /v1/capabilities`
 
@@ -59,7 +70,7 @@ descriptors** — a client must not assume values that are not listed here.
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "queue": { "max_running": 1, "max_waiting": 2 },
   "workflows": [{
     "id": "flux2-klein",
@@ -74,6 +85,13 @@ descriptors** — a client must not assume values that are not listed here.
     "reference_images": { "max": 4, "media_types": ["image/jpeg", "image/png", "image/webp"],
                           "max_bytes": 20971520, "max_pixels": 50000000 },
     "typical_seconds": { "draft": 15, "standard": 26 }
+  }, {
+    "id": "z-image-turbo",
+    "output": { "…": "same as flux2-klein" },
+    "count": { "min": 1, "max": 4 },
+    "seed": true,
+    "reference_images": { "max": 0 },
+    "typical_seconds": 34
   }],
   "coordination": { "waits_for": ["vpipe-api"] }
 }
@@ -185,6 +203,11 @@ that observation — clients often submit follow-up jobs right after one finishe
 job stays `queued` with `waiting_for` set. An unreachable server counts as idle (logged as a warning).
 Coordination is checked only before a job starts; a running job is never paused.
 
+### `POST /v1/workflows/z-image-turbo/jobs`
+
+Same as `flux2-klein` with fewer fields: `prompt`, `output`, `seed`, `count` (same rules). There is no
+`quality` (one model) and no `reference_images` (text only); sending either is `422`.
+
 ## Workflow `flux2-klein`
 
 - Output: PNG, 8-bit sRGB, no alpha, exact `output.width × output.height`.
@@ -196,3 +219,12 @@ Coordination is checked only before a job starts; a running job is never paused.
 - Consecutive `standard` jobs may run faster than the first one: the server can keep the engine warm between
   them and releases it when idle, before a `draft` job, or when another GPU server needs the memory. This
   changes only timings; `estimate_seconds` and `typical_seconds` stay conservative (cold) values.
+
+## Workflow `z-image-turbo`
+
+- Z Image Turbo (Tongyi-MAI, Apache-2.0): text to image, delivered exactly like `flux2-klein` (PNG,
+  8-bit sRGB, no alpha, exact size, cover + centre crop from a ~1 MP generation size).
+- Steps and guidance are the model's recommended settings, chosen by the engine.
+- Measured: 33 s per image (56 s the very first run). Its generation sizes reuse the table verified with
+  FLUX.2 [klein]; only the timing above is measured for this model, its peak memory is not.
+- It never shares the resident engine with `standard` jobs: a `z-image-turbo` job first releases it.

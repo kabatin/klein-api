@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — 2026-10-28
+
+- `klein-api setup [--models klein-9b,klein-4b,z-image-turbo] [--check] [--yes] [--json] [--lan] [--service]
+  [--port N] [--prefix DIR] [--label-suffix S] [--coordinate-with NAME=URL]`: the uniform setup command shared
+  with vpipe-api, wan-api, ace-step-api and sfx-api. Installs draw-things-cli + gRPCServerCLI-macOS v26.1011.0
+  from the GitHub release (SHA-256 pinned; a hand-configured CLI is never replaced), fetches models with
+  `draw-things-cli models ensure` under a silence watchdog (resumes), checks disk first, merges the config
+  without removing keys (0600, atomic, token never printed), and with `--service` writes and loads a
+  LaunchAgent, waits for `/v1/health` and reports the macOS "access other apps' data" dialog as `needs_human`.
+- Workflow `z-image-turbo`: Z Image Turbo (Apache-2.0) text to image, 1–4 PNGs at the exact size; text encoder
+  and VAE from Draw Things' model definition, the model's recommended steps/CFG. Timing measured (33 s per
+  image); memory and non-square sizes not yet.
+- `/v1/health` gains `workflows[id].{available, reason}`; a submit to a workflow (or `flux2-klein` tier) whose
+  model is missing gets `503 workflow_unavailable`. `serve` starts while any model is installed; `doctor`
+  warns (instead of failing) about the others and `doctor --smoke` skips them.
+
 ## 0.1.0 — 2026-10-17
 
 First version.

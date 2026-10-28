@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "klein-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "Run FLUX.2 [klein] text/reference-to-image on an Apple Silicon Mac as an HTTP job API"
 readme = "README.md"
 license = "Apache-2.0"
