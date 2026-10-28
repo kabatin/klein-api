@@ -32,8 +32,8 @@ DIALOG_HINT = (
 )
 
 Run = Callable[[Sequence[str]], int]
-# url -> HTTP status, or None when nothing answers
-HttpGet = Callable[[str], int | None]
+# (url, bearer token or None) -> HTTP status, or None when nothing answers
+HttpGet = Callable[[str, str | None], int | None]
 
 
 @dataclass(frozen=True)
@@ -71,9 +71,12 @@ def run_quiet(cmd: Sequence[str]) -> int:
     return subprocess.run(list(cmd), capture_output=True, check=False).returncode
 
 
-def http_status(url: str) -> int | None:
+def http_status(url: str, token: str | None = None) -> int | None:
+    # a server with a token answers every route, /v1/health too, with 401 without it
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    request = urllib.request.Request(url, headers=headers)  # noqa: S310 - loopback http
     try:
-        with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310 - loopback http
+        with urllib.request.urlopen(request, timeout=2) as response:  # noqa: S310
             return int(response.status)
     except urllib.error.HTTPError as exc:
         return exc.code
@@ -86,6 +89,7 @@ def install_service(
     *,
     port: int,
     config_env: Mapping[str, str],
+    token: str | None = None,
     which: Callable[[str], str | None] = shutil.which,
     run: Run = run_quiet,
     http_get: HttpGet = http_status,
@@ -114,16 +118,21 @@ def install_service(
     if run(["launchctl", "bootstrap", domain, str(paths.plist)]) != 0:
         raise SetupError(f"launchctl bootstrap {domain} {paths.plist} failed")
     emit(f"loaded {paths.label}; waiting for http://127.0.0.1:{port}/v1/health")
-    return wait_healthy(port, http_get=http_get, wait_s=wait_s, poll_s=poll_s)
+    return wait_healthy(port, token, http_get=http_get, wait_s=wait_s, poll_s=poll_s)
 
 
 def wait_healthy(
-    port: int, *, http_get: HttpGet = http_status, wait_s: float, poll_s: float
+    port: int,
+    token: str | None = None,
+    *,
+    http_get: HttpGet = http_status,
+    wait_s: float,
+    poll_s: float,
 ) -> bool:
     url = f"http://127.0.0.1:{port}/v1/health"
     deadline = time.monotonic() + wait_s
     while True:
-        if http_get(url) == 200:
+        if http_get(url, token) == 200:
             return True
         if time.monotonic() >= deadline:
             return False

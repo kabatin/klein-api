@@ -53,6 +53,7 @@ class World:
         self.messages: list[str] = []
         self.answers: list[str] = []
         self.health = 200
+        self.tokens: list[str | None] = []
 
     def download(self, url: str, part: Path, size: int, emit) -> None:
         self.downloads.append(url)
@@ -67,13 +68,17 @@ class World:
             (self.models / name).write_bytes(b"x")
         return 0
 
+    def http_get(self, url: str, token: str | None) -> int:
+        self.tokens.append(token)
+        return self.health
+
     def deps(self, **overrides) -> Deps:
         base = Deps(
             download=self.download,
             run_ensure=self.run_ensure,
             launchctl=lambda cmd: self.launchctl.append(list(cmd)) or 0,
             which=lambda name: str(self.tmp / "bin" / name),
-            http_get=lambda url: self.health,
+            http_get=self.http_get,
             machine=lambda path: MAC,
             is_tty=lambda: False,
             ask=lambda prompt: self.answers.pop(0),
@@ -250,6 +255,9 @@ def test_lan_sets_a_token_that_is_never_reported(world: World) -> None:
     code, report = run_setup(world.args("klein-4b", lan=True), world.deps())
     token = tomllib.loads(world.config.read_text())["token"]
     assert code == 0 and report["lan"] and report["tokenSet"]
+    # the health probe of a token-protected server sends the token
+    code, report = run_setup(world.args("klein-4b", service=True), world.deps())
+    assert code == 3 and report["service"]["healthy"] and world.tokens[-1] == token
     text = json.dumps(report) + "\n".join(world.messages)
     assert token not in text
 
@@ -266,7 +274,9 @@ def test_cli_json_is_one_object_on_the_last_stdout_line(
 ) -> None:
     original = command.Deps
     monkeypatch.setattr(
-        command, "Deps", lambda: replace(original(), machine=lambda p: MAC, http_get=lambda u: None)
+        command,
+        "Deps",
+        lambda: replace(original(), machine=lambda p: MAC, http_get=lambda u, t: None),
     )
     code = main(
         ["--config", str(world.config), "setup", "--check", "--json", "--models", "klein-4b"]
@@ -280,7 +290,9 @@ def test_cli_json_is_one_object_on_the_last_stdout_line(
 def test_cli_human_output(world: World, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     original = command.Deps
     monkeypatch.setattr(
-        command, "Deps", lambda: replace(original(), machine=lambda p: MAC, http_get=lambda u: None)
+        command,
+        "Deps",
+        lambda: replace(original(), machine=lambda p: MAC, http_get=lambda u, t: None),
     )
     assert main(["--config", str(world.config), "setup", "--check"]) == 0
     out = capsys.readouterr().out
@@ -299,3 +311,25 @@ def test_machine_support_rules(tmp_path: Path) -> None:
         "freeBytes",
         "tools",
     }
+
+
+def test_http_status_sends_the_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str | None] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    def urlopen(request, timeout):
+        seen.append(request.get_header("Authorization"))
+        return Response()
+
+    monkeypatch.setattr(command.svc.urllib.request, "urlopen", urlopen)
+    assert command.svc.http_status("http://127.0.0.1:1/v1/health", "tok") == 200
+    assert command.svc.http_status("http://127.0.0.1:1/v1/health") == 200
+    assert seen == ["Bearer tok", None]

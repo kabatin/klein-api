@@ -271,6 +271,7 @@ def _configure(
             paths,
             port=_port(data),
             config_env=env,
+            token=_token(data, d.env),
             which=d.which,
             run=d.launchctl,
             http_get=d.http_get,
@@ -293,10 +294,16 @@ def _port(data: Mapping[str, Any]) -> int:
     return int(data.get("port") or DEFAULT_PORT)
 
 
+def _token(data: Mapping[str, Any], env: Mapping[str, str]) -> str | None:
+    token = env.get(ENV_PREFIX + "TOKEN") or data.get("token")
+    return str(token) if token else None
+
+
 def _service_state(args: SetupArgs, d: Deps, data: Mapping[str, Any]) -> dict[str, Any]:
     paths = svc.service_paths(d.home, args.label_suffix)
     installed = paths.plist.is_file()
-    healthy = installed and d.http_get(f"http://127.0.0.1:{_port(data)}/v1/health") == 200
+    url = f"http://127.0.0.1:{_port(data)}/v1/health"
+    healthy = installed and d.http_get(url, _token(data, d.env)) == 200
     return {"installed": installed, "label": paths.label, "healthy": healthy}
 
 
@@ -316,7 +323,7 @@ def _report(
         "action": action,
         "url": f"http://127.0.0.1:{_port(data)}",
         "lan": not is_loopback(host),
-        "tokenSet": bool(data.get("token") or d.env.get(ENV_PREFIX + "TOKEN")),
+        "tokenSet": _token(data, d.env) is not None,
         "configPath": str(args.config_path),
         "service": outcome.service or None,
         "machine": machine.as_json() if machine is not None else None,
