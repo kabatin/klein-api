@@ -325,11 +325,40 @@ def test_http_status_sends_the_bearer_token(monkeypatch: pytest.MonkeyPatch) -> 
         def __exit__(self, *_: object) -> None:
             return None
 
-    def urlopen(request, timeout):
-        seen.append(request.get_header("Authorization"))
-        return Response()
+    class Opener:
+        def open(self, request, timeout):
+            seen.append(request.get_header("Authorization"))
+            return Response()
 
-    monkeypatch.setattr(command.svc.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(command.svc, "no_proxy_opener", Opener)
     assert command.svc.http_status("http://127.0.0.1:1/v1/health", "tok") == 200
     assert command.svc.http_status("http://127.0.0.1:1/v1/health") == 200
     assert seen == ["Bearer tok", None]
+
+
+def test_http_status_never_goes_through_a_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bearer token must only reach the server itself: with a proxy in the environment
+    (port 9 = discard, nothing answers) the probe still talks to the server directly."""
+    import http.server
+
+    seen: list[str | None] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_: object) -> None:
+            return None
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.setenv("no_proxy", "")
+        url = f"http://127.0.0.1:{server.server_address[1]}/v1/health"
+        assert command.svc.http_status(url, "tok") == 200
+        assert seen == ["Bearer tok"]
+    finally:
+        server.shutdown()

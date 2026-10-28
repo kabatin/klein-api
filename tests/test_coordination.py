@@ -178,7 +178,7 @@ def test_probe_never_goes_through_a_proxy(
 
     monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
     monkeypatch.setenv("no_proxy", "")
-    monkeypatch.setattr(coordination, "_OPENER", coordination._build_opener())
+    monkeypatch.setattr(coordination, "_OPENER", coordination.no_proxy_opener())
     assert probe_health(fake_peer.peer()).idle
     assert fake_peer.headers_seen[0]["Authorization"] == f"Bearer {PEER_TOKEN}"
 

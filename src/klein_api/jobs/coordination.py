@@ -55,13 +55,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # a 3xx is then raised as HTTPError instead of being followed
 
 
-def _build_opener() -> urllib.request.OpenerDirector:
+def no_proxy_opener() -> urllib.request.OpenerDirector:
     """No proxy ever, whatever the environment or system settings say (the peer token must only
     reach health_url), and no redirects."""
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
-_OPENER = _build_opener()
+_OPENER = no_proxy_opener()
 
 
 def probe_health(peer: PeerServer, timeout_s: float = PROBE_TIMEOUT_S) -> PeerHealth:

@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from klein_api.jobs.coordination import no_proxy_opener
 from klein_api.setup.errors import Emit, SetupError
 
 LABEL = "com.github.kabatin.klein-api"
@@ -76,7 +77,8 @@ def http_status(url: str, token: str | None = None) -> int | None:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     request = urllib.request.Request(url, headers=headers)  # noqa: S310 - loopback http
     try:
-        with urllib.request.urlopen(request, timeout=2) as response:  # noqa: S310
+        # never through a proxy (the token must only reach this server), no redirects
+        with no_proxy_opener().open(request, timeout=2) as response:
             return int(response.status)
     except urllib.error.HTTPError as exc:
         return exc.code
