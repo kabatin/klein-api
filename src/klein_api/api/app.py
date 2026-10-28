@@ -26,6 +26,7 @@ from klein_api.api.schemas import (
     JobAccepted,
     JobResponse,
     QueueCapacity,
+    WorkflowHealth,
     WorkflowInfo,
     WorkflowsResponse,
 )
@@ -59,6 +60,14 @@ def _not_found(what: str) -> JSONResponse:
 
 def _submit_endpoint(queue: JobQueue, workflow: Workflow) -> Callable[..., Any]:
     def submit(params: BaseModel, idempotency_key: str | None = None) -> Any:
+        reason = workflow.unavailable_reason(params)
+        if reason is not None:
+            return error_response(
+                503,
+                "workflow_unavailable",
+                f"{workflow.id} cannot run on this server: {reason}",
+                retryable=False,
+            )
         try:
             record, created = queue.submit(workflow, params, idempotency_key)
         except QueueFullError as exc:
@@ -102,6 +111,14 @@ def _submit_endpoint(queue: JobQueue, workflow: Workflow) -> Callable[..., Any]:
     return submit
 
 
+def _workflow_health(registry: WorkflowRegistry) -> dict[str, WorkflowHealth]:
+    health: dict[str, WorkflowHealth] = {}
+    for workflow in registry:
+        available, reason = workflow.availability()
+        health[workflow.id] = WorkflowHealth(available=available, reason=reason)
+    return health
+
+
 def build_router(
     queue: JobQueue, registry: WorkflowRegistry, waits_for: list[str] | None = None
 ) -> APIRouter:
@@ -116,6 +133,7 @@ def build_router(
             running=running,
             waiting=waiting,
             max_waiting=queue.max_waiting,
+            workflows=_workflow_health(registry),
         )
         # a dead worker means nothing will ever run: say so instead of looking healthy
         return body if alive else JSONResponse(status_code=503, content=body.model_dump())

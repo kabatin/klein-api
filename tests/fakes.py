@@ -14,8 +14,8 @@ from klein_api.backends.base import (
     GenerationRequest,
     GenerationResult,
     KleinBackend,
+    ModelId,
     ProgressCallback,
-    Quality,
 )
 from klein_api.checks import Check, Level
 from klein_api.workflows.base import (
@@ -55,13 +55,18 @@ class FakeKleinBackend(KleinBackend):
         self.healthy = True
         self.lifecycle: list[str] = []
         self.peer_check: Callable[[], bool] | None = None
+        # model -> why it cannot run (absent: it can)
+        self.problems: dict[ModelId, str] = {}
 
     @property
     def max_reference_images(self) -> int:
         return self.max_refs
 
-    def typical_seconds(self, quality: Quality) -> float:
-        return {"draft": 15.0, "standard": 26.0}[quality]
+    def typical_seconds(self, model: ModelId) -> float:
+        return {"klein-4b": 15.0, "klein-9b": 26.0, "z-image-turbo": 34.0}[model]
+
+    def model_problem(self, model: ModelId) -> str | None:
+        return self.problems.get(model)
 
     def plan(self, request: GenerationRequest) -> GenerationPlan:
         return GenerationPlan(self.size[0], self.size[1], request.count, estimate_seconds=10.0)

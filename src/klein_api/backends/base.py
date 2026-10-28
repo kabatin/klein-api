@@ -1,10 +1,10 @@
-"""The backend contract: how a FLUX.2 [klein] engine is driven.
+"""The backend contract: how an image engine (FLUX.2 [klein], Z Image Turbo) is driven.
 
 A backend receives a backend-neutral :class:`GenerationRequest` and returns raw images. It
 chooses everything engine-specific — generation size, model file, steps, guidance — from the
-request's quality tier. It never sees HTTP, client schemas or client-chosen paths, and its own
-output (logs, error text) never reaches clients unredacted. Swapping the backend must not
-change the HTTP contract.
+request's model (by default the FLUX.2 [klein] model of its quality tier). It never sees HTTP,
+client schemas or client-chosen paths, and its own output (logs, error text) never reaches
+clients unredacted. Swapping the backend must not change the HTTP contract.
 """
 
 from __future__ import annotations
@@ -19,6 +19,9 @@ from typing import ClassVar, Literal
 from klein_api.checks import Check
 
 Quality = Literal["draft", "standard"]
+# The models a backend can run; also the ids of `klein-api setup` components.
+ModelId = Literal["klein-9b", "klein-4b", "z-image-turbo"]
+QUALITY_MODELS: dict[Quality, ModelId] = {"standard": "klein-9b", "draft": "klein-4b"}
 
 # Backend-reported progress over the whole job, 0.0..1.0.
 ProgressCallback = Callable[[float], None]
@@ -36,6 +39,12 @@ class GenerationRequest:
     count: int
     # upright RGB PNGs inside the job directory; the first is the main reference
     references: tuple[Path, ...] = ()
+    # the model to run; None: the FLUX.2 [klein] model of ``quality``
+    model: ModelId | None = None
+
+    @property
+    def model_id(self) -> ModelId:
+        return self.model or QUALITY_MODELS[self.quality]
 
 
 @dataclass(frozen=True)
@@ -89,8 +98,13 @@ class KleinBackend(ABC):
         return 0
 
     @abstractmethod
-    def typical_seconds(self, quality: Quality) -> float:
+    def typical_seconds(self, model: ModelId) -> float:
         """Expected seconds per image (a client hint, also the basis of estimates)."""
+
+    def model_problem(self, model: ModelId) -> str | None:
+        """Why ``model`` cannot run now (engine or model files missing), else None. The
+        text reaches clients: no paths."""
+        return None
 
     @abstractmethod
     def plan(self, request: GenerationRequest) -> GenerationPlan:

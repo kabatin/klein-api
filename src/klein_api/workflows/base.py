@@ -80,6 +80,16 @@ class Workflow(ABC):
     def smoke_params(self) -> dict[str, Any]:
         """Cheapest valid params, used by ``klein-api doctor --smoke``."""
 
+    def unavailable_reason(self, params: BaseModel | None = None) -> str | None:
+        """Why this workflow (or these params, e.g. one quality tier) cannot run on this
+        server now, else None. Shown to clients: no paths."""
+        return None
+
+    def availability(self) -> tuple[bool, str | None]:
+        """For ``/v1/health``: can it take jobs, and why not (or why some params cannot)."""
+        reason = self.unavailable_reason()
+        return reason is None, reason
+
 
 class WorkflowRegistry:
     def __init__(self, workflows: Iterable[Workflow]) -> None:

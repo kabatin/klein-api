@@ -7,6 +7,8 @@ Facts this module relies on (draw-things-cli v26.1011.0 on the target Mac, 2026-
   file is downloaded mid-job;
 - width and height must be multiples of 64 (see :mod:`klein_api.backends.sizes`);
 - FLUX.2 [klein] is distilled: 4 steps, CFG 1 (never raised), passed explicitly;
+- Z Image Turbo is distilled too: no ``--steps`` / ``--cfg``, so the CLI applies the model's
+  recommended settings (Draw Things' model note: 8 steps, trailing sampler);
 - ``--seed`` is deterministic and ``--output`` writes a PNG;
 - ``--image`` (repeatable, the first is the main one) is a FLUX.2 reference at the default
   strength 1.0, centre-cropped by the CLI to the output aspect. ``--strength`` is never
@@ -36,8 +38,8 @@ from klein_api.backends.base import (
     GenerationRequest,
     GenerationResult,
     KleinBackend,
+    ModelId,
     ProgressCallback,
-    Quality,
 )
 from klein_api.backends.drawthings_run import JobRun, raw_path
 from klein_api.backends.process import reap_orphan
@@ -63,37 +65,56 @@ ENGINE_FLAGS = ("--local", "--offline", "--no-download-missing", "--disable-prev
 
 @dataclass(frozen=True)
 class Recipe:
-    """Engine settings behind a quality tier. Never exposed to clients."""
+    """Engine settings behind a model id. Never exposed to clients."""
 
+    label: str  # the doctor check's name
     model: str
     # files the model needs besides itself (checked by `doctor` / `serve`); a quantised text
     # encoder's .ckpt is only an index (0.4 MB): its weights are in the -tensordata file
     dependencies: tuple[str, ...]
-    steps: int
-    cfg: float
-    # per 1024x1024 image, cold process (model load included): measured 25.9 s (9B) and
-    # 14 s (4B), rounded up
+    # None: not passed, the CLI uses the model's recommended value
+    steps: int | None
+    cfg: float | None
+    # per 1024x1024 image, cold process (model load included): measured 25.9 s (9B), 14 s
+    # (4B) and 33 s (Z Image Turbo; 56 s for the very first run), rounded up
     seconds_per_image: float
+
+    @property
+    def files(self) -> tuple[str, ...]:
+        return (self.model, *self.dependencies)
 
 
 VAE = "flux_2_vae_f16.ckpt"
-RECIPES: dict[Quality, Recipe] = {
-    "standard": Recipe(
+RECIPES: dict[ModelId, Recipe] = {
+    "klein-9b": Recipe(
+        label="FLUX.2 [klein] standard model",
         model="flux_2_klein_9b_i8x.ckpt",
         dependencies=("qwen_3_8b_q8p.ckpt", "qwen_3_8b_q8p.ckpt-tensordata", VAE),
         steps=4,
         cfg=1.0,
         seconds_per_image=26.0,
     ),
-    "draft": Recipe(
+    "klein-4b": Recipe(
+        label="FLUX.2 [klein] draft model",
         model="flux_2_klein_4b_i8x.ckpt",
         dependencies=("qwen_3_4b_q8p.ckpt", "qwen_3_4b_q8p.ckpt-tensordata", VAE),
         steps=4,
         cfg=1.0,
         seconds_per_image=15.0,
     ),
+    # text encoder and VAE from Draw Things' model definition (ModelZoo.swift at v26.1011.0,
+    # "Z Image Turbo 1.0 (8-bit S)"). Whether its text encoder also leaves a -tensordata file
+    # is unchecked, so only the .ckpt names are required.
+    "z-image-turbo": Recipe(
+        label="Z Image Turbo model",
+        model="z_image_turbo_1.0_i8x.ckpt",
+        dependencies=("qwen_3_vl_4b_instruct_q8p.ckpt", "flux_1_vae_f16.ckpt"),
+        steps=None,
+        cfg=None,
+        seconds_per_image=34.0,
+    ),
 }
-# Size timings are only measured with the 9B model; the 4B is assumed to scale the same way.
+# Size timings are only measured with the 9B model; the others are assumed to scale the same way.
 SIZE_REFERENCE_MODEL = "flux_2_klein_9b_i8x.ckpt"
 
 
@@ -166,13 +187,13 @@ class DrawThingsCliBackend(KleinBackend):
         return self.options.max_reference_images
 
     # -- planning --------------------------------------------------------------------
-    def typical_seconds(self, quality: Quality) -> float:
-        return RECIPES[quality].seconds_per_image
+    def typical_seconds(self, model: ModelId) -> float:
+        return RECIPES[model].seconds_per_image
 
     def plan(self, request: GenerationRequest) -> GenerationPlan:
         width, height = generation_size(request.aspect_ratio)
         per_image = (
-            RECIPES[request.quality].seconds_per_image
+            RECIPES[request.model_id].seconds_per_image
             * size_factor((width, height), SIZE_REFERENCE_MODEL)
             * reference_factor(len(request.references))
         )
@@ -202,18 +223,18 @@ class DrawThingsCliBackend(KleinBackend):
                 _describe_cli(cli) if cli else f"{self.options.cli} not found or not executable",
             )
         ]
-        for quality, recipe in RECIPES.items():
-            missing = [
-                name
-                for name in (recipe.model, *recipe.dependencies)
-                if not (self.models_dir / name).is_file()
-            ]
+        missing = {model: self.missing_files(model) for model in RECIPES}
+        # one installed model is enough to serve; the others are optional
+        level = Level.WARN if any(not files for files in missing.values()) else Level.FAIL
+        for model, recipe in RECIPES.items():
+            absent = missing[model]
             checks.append(
                 Check(
-                    f"FLUX.2 [klein] {quality} model",
-                    Level.FAIL if missing else Level.OK,
-                    f"missing in {self.models_dir}: {', '.join(missing)}"
-                    if missing
+                    recipe.label,
+                    level if absent else Level.OK,
+                    f"missing in {self.models_dir}: {', '.join(absent)} "
+                    f"(klein-api setup --models {model})"
+                    if absent
                     else f"{recipe.model} (+ {', '.join(recipe.dependencies)})",
                 )
             )
@@ -242,6 +263,15 @@ class DrawThingsCliBackend(KleinBackend):
             )
         return checks
 
+    def missing_files(self, model: ModelId) -> list[str]:
+        return [name for name in RECIPES[model].files if not (self.models_dir / name).is_file()]
+
+    def model_problem(self, model: ModelId) -> str | None:
+        if self.cli_path() is None:
+            return "draw-things-cli is not installed"
+        missing = self.missing_files(model)
+        return f"model files missing: {', '.join(missing)}" if missing else None
+
     # -- generation ------------------------------------------------------------------
     def command(
         self,
@@ -253,10 +283,15 @@ class DrawThingsCliBackend(KleinBackend):
         remote_port: int | None = None,
     ) -> list[str]:
         """argv for one image; with ``remote_port`` it runs on the resident server."""
-        recipe = RECIPES[request.quality]
+        recipe = RECIPES[request.model_id]
         references: list[str] = []
         for path in request.references:
             references += ["--image", str(path)]  # never --strength: < 1 means img2img
+        sampling: list[str] = []
+        if recipe.steps is not None:
+            sampling += ["--steps", str(recipe.steps)]
+        if recipe.cfg is not None:
+            sampling += ["--cfg", f"{recipe.cfg:g}"]
         return [
             cli,
             "generate",
@@ -271,10 +306,7 @@ class DrawThingsCliBackend(KleinBackend):
             str(plan.width),
             "--height",
             str(plan.height),
-            "--steps",
-            str(recipe.steps),
-            "--cfg",
-            f"{recipe.cfg:g}",
+            *sampling,
             "--seed",
             str(request.seed + index),
             *references,
@@ -341,13 +373,13 @@ class DrawThingsCliBackend(KleinBackend):
                 self.resident.release(discard=not ok, job_id=request.job_id)
 
     def _resident_port(self, request: GenerationRequest) -> int | None:
-        """The resident server's port for a standard job, else None (one process per
-        image). A draft job first stops the server: it must not share it with the 9B."""
+        """The resident server's port for a 9B job, else None (one process per image). Any
+        other model first stops the server: it must not share the memory with the 9B."""
         if self.resident is None:
             return None
-        if request.quality != "standard":
+        if request.model_id != "klein-9b":
             if self.resident.running():
-                self.resident.stop("a draft job runs without it")
+                self.resident.stop(f"a {request.model_id} job runs without it")
             return None
         if self.resident.acquire(request.job_id):
             return self.options.grpc_port

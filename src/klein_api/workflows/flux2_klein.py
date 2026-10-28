@@ -12,13 +12,19 @@ import base64
 import binascii
 import re
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from klein_api.backends.base import GenerationRequest, GenerationResult, Quality
+from klein_api.backends.base import (
+    QUALITY_MODELS,
+    GenerationRequest,
+    GenerationResult,
+    ModelId,
+    Quality,
+)
 from klein_api.media import (
     ALLOWED_IMAGE_FORMATS,
     MAX_IMAGE_PIXELS,
@@ -52,6 +58,17 @@ IMAGE_MEDIA_TYPES = sorted(set(ALLOWED_IMAGE_FORMATS.values()))
 
 # C0 control characters and DEL; tab and newline are ordinary prompt text.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+ModelProblem = Callable[[ModelId], str | None]
+
+
+def clean_prompt(value: str) -> str:
+    if _CONTROL.search(value):
+        raise ValueError("prompt contains control characters")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("prompt is blank")
+    return stripped
 
 
 class ImageInput(BaseModel):
@@ -122,12 +139,7 @@ class Flux2KleinParams(BaseModel):
     @field_validator("prompt")
     @classmethod
     def _prompt(cls, value: str) -> str:
-        if _CONTROL.search(value):
-            raise ValueError("prompt contains control characters")
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("prompt is blank")
-        return stripped
+        return clean_prompt(value)
 
 
 class Flux2KleinWorkflow(Workflow):
@@ -140,10 +152,39 @@ class Flux2KleinWorkflow(Workflow):
     params_model = Flux2KleinParams
 
     def __init__(
-        self, *, max_reference_images: int = 0, typical_seconds: Mapping[str, float] | None = None
+        self,
+        *,
+        max_reference_images: int = 0,
+        typical_seconds: Mapping[str, float] | None = None,
+        model_problem: ModelProblem | None = None,
     ) -> None:
         self.max_reference_images = max_reference_images
         self.typical_seconds = dict(typical_seconds or {"draft": 15.0, "standard": 26.0})
+        self._model_problem = model_problem or (lambda _: None)
+
+    def _tier_problems(self) -> dict[Quality, str]:
+        problems: dict[Quality, str] = {}
+        for quality, model in QUALITY_MODELS.items():
+            problem = self._model_problem(model)
+            if problem is not None:
+                problems[quality] = problem
+        return problems
+
+    def unavailable_reason(self, params: BaseModel | None = None) -> str | None:
+        if params is not None:
+            quality = cast(Flux2KleinParams, params).quality
+            problem = self._model_problem(QUALITY_MODELS[quality])
+            return f"the {quality} tier: {problem}" if problem else None
+        problems = self._tier_problems()
+        if len(problems) < len(QUALITY_MODELS):
+            return None
+        return "; ".join(f"{q}: {p}" for q, p in problems.items())
+
+    def availability(self) -> tuple[bool, str | None]:
+        """Available while one tier can run; ``reason`` then names the tier that cannot."""
+        problems = self._tier_problems()
+        reason = "; ".join(f"{q}: {p}" for q, p in problems.items()) or None
+        return len(problems) < len(QUALITY_MODELS), reason
 
     def store_inputs(self, params: BaseModel, job_dir: Path) -> dict[str, Any]:
         p = cast(Flux2KleinParams, params)
@@ -205,59 +246,11 @@ class Flux2KleinWorkflow(Workflow):
     def finalize(
         self, job_id: str, params: Mapping[str, Any], job_dir: Path, raw: GenerationResult
     ) -> WorkflowOutput:
-        width, height = params["output"]["width"], params["output"]["height"]
-        count = params["count"]
-        if len(raw.outputs) != count:
-            raise WorkflowFailedError(
-                "invalid_output",
-                f"the engine delivered {len(raw.outputs)} of {count} images",
-                retryable=True,
-            )
-        finals: list[Path] = []
-        try:
-            source = inspect_png(raw.outputs[0])
-            for index, produced in enumerate(raw.outputs):
-                final = job_dir / f"output-{index}.png"
-                finals.append(final)
-                cover_crop_png(
-                    produced, final, width, height, comment=f"klein-job:{job_id}:{index}"
-                )
-                problem = _output_problem(inspect_png(final), width, height)
-                if problem is not None:
-                    raise WorkflowFailedError("invalid_output", problem, retryable=True)
-        except (MediaError, WorkflowFailedError) as exc:
-            for final in finals:
-                final.unlink(missing_ok=True)
-            if isinstance(exc, WorkflowFailedError):
-                raise
-            raise WorkflowFailedError("invalid_output", str(exc), retryable=True) from exc
-        for produced in raw.outputs:
-            produced.unlink(missing_ok=True)
-        seed = params["seed"]
-        return WorkflowOutput(
-            files=tuple(finals),
-            result={
-                "outputs": [
-                    {
-                        "index": index,
-                        "media_type": self.output_media_type,
-                        "width": width,
-                        "height": height,
-                        "seed_used": seed + index,
-                    }
-                    for index in range(count)
-                ],
-                "seed_used": seed,
-                "details": {
-                    "generation": {
-                        "width": source.width,
-                        "height": source.height,
-                        "quality": params["quality"],
-                        "references": len(params.get("reference_images", [])),
-                    }
-                },
-            },
-        )
+        details = {
+            "quality": params["quality"],
+            "references": len(params.get("reference_images", [])),
+        }
+        return deliver_pngs(job_id, params, job_dir, raw, details)
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -294,6 +287,61 @@ class Flux2KleinWorkflow(Workflow):
             "seed": 1,
             "count": 1,
         }
+
+
+def deliver_pngs(
+    job_id: str,
+    params: Mapping[str, Any],
+    job_dir: Path,
+    raw: GenerationResult,
+    details: Mapping[str, Any],
+) -> WorkflowOutput:
+    """Cover-crop each raw image to the exact output size as 8-bit RGB PNG, check every file,
+    and describe them (``details`` goes into ``details.generation``)."""
+    width, height = params["output"]["width"], params["output"]["height"]
+    count = params["count"]
+    if len(raw.outputs) != count:
+        raise WorkflowFailedError(
+            "invalid_output",
+            f"the engine delivered {len(raw.outputs)} of {count} images",
+            retryable=True,
+        )
+    finals: list[Path] = []
+    try:
+        source = inspect_png(raw.outputs[0])
+        for index, produced in enumerate(raw.outputs):
+            final = job_dir / f"output-{index}.png"
+            finals.append(final)
+            cover_crop_png(produced, final, width, height, comment=f"klein-job:{job_id}:{index}")
+            problem = _output_problem(inspect_png(final), width, height)
+            if problem is not None:
+                raise WorkflowFailedError("invalid_output", problem, retryable=True)
+    except (MediaError, WorkflowFailedError) as exc:
+        for final in finals:
+            final.unlink(missing_ok=True)
+        if isinstance(exc, WorkflowFailedError):
+            raise
+        raise WorkflowFailedError("invalid_output", str(exc), retryable=True) from exc
+    for produced in raw.outputs:
+        produced.unlink(missing_ok=True)
+    seed = params["seed"]
+    return WorkflowOutput(
+        files=tuple(finals),
+        result={
+            "outputs": [
+                {
+                    "index": index,
+                    "media_type": OUTPUT_MEDIA_TYPE,
+                    "width": width,
+                    "height": height,
+                    "seed_used": seed + index,
+                }
+                for index in range(count)
+            ],
+            "seed_used": seed,
+            "details": {"generation": {"width": source.width, "height": source.height, **details}},
+        },
+    )
 
 
 def _output_problem(info: ImageInfo, width: int, height: int) -> str | None:

@@ -11,14 +11,25 @@ from klein_api.jobs.models import JobError, JobStatus
 from klein_api.jobs.queue import JobView
 
 
+class WorkflowHealth(BaseModel):
+    available: bool = Field(description="its engine is installed with its models: jobs accepted")
+    reason: str | None = Field(
+        default=None,
+        description="why it (or one of its quality tiers) cannot run; null when everything can",
+    )
+
+
 class HealthResponse(BaseModel):
-    """Same shape as vpipe-api's and wan-api's ``/v1/health``."""
+    """Same shape as vpipe-api's and wan-api's ``/v1/health``, plus ``workflows``."""
 
     status: str
     version: str
     running: int
     waiting: int
     max_waiting: int
+    workflows: dict[str, WorkflowHealth] = Field(
+        default_factory=dict, description="per workflow: can it take jobs"
+    )
 
 
 class WorkflowInfo(BaseModel):

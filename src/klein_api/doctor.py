@@ -190,7 +190,13 @@ def run_doctor(
             emit(check)
     if smoke and not any(check.failed for check in checks):
         for workflow in registry:
-            check = run_smoke(settings, backend, workflow)
+            params = workflow.params_model.model_validate(workflow.smoke_params())
+            reason = workflow.unavailable_reason(params)
+            check = (
+                Check(f"smoke {workflow.id}", Level.WARN, f"skipped: {reason}")
+                if reason is not None
+                else run_smoke(settings, backend, workflow)
+            )
             checks.append(check)
             if emit is not None:
                 emit(check)

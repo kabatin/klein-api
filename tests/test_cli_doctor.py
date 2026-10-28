@@ -134,6 +134,17 @@ def test_smoke_runs_a_short_job(settings: Settings, healthy: None) -> None:
     assert smoke.level is Level.OK and "1024x1024 PNG" in smoke.detail
     assert backend.calls[0].quality == "draft" and backend.calls[0].count == 1
     assert not any((settings.data_dir / "smoke").iterdir())
+    assert checks["smoke z-image-turbo"].level is Level.OK
+    assert backend.calls[1].model_id == "z-image-turbo"
+
+
+def test_smoke_skips_a_workflow_whose_model_is_missing(settings: Settings, healthy: None) -> None:
+    backend = FakeKleinBackend(png=True, size=(1024, 1024))
+    backend.problems = {"z-image-turbo": "model files missing: z_image_turbo_1.0_i8x.ckpt"}
+    checks = by_name(run_doctor(settings, backend, build_registry(backend), smoke=True))
+    skipped = checks["smoke z-image-turbo"]
+    assert skipped.level is Level.WARN and "z_image_turbo_1.0_i8x.ckpt" in skipped.detail
+    assert checks["smoke flux2-klein"].level is Level.OK and len(backend.calls) == 1
 
 
 def test_smoke_failure_is_reported(settings: Settings, healthy: None) -> None:

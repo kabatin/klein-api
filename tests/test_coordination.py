@@ -441,6 +441,7 @@ def test_a_job_waits_queued_while_another_gpu_server_is_busy(
         "running": 0,
         "waiting": 1,
         "max_waiting": 1,
+        "workflows": {"echo": {"available": True, "reason": None}},
     }
     assert not backend.calls
     time.sleep(0.3)

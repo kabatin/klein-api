@@ -55,7 +55,17 @@ def poll(client: TestClient, job_id: str, want: str, timeout: float = 5) -> dict
 
 
 def test_health_matches_vpipe_api_shape(client: TestClient) -> None:
-    expected = {"status": "ok", "version": "0.1.0", "running": 0, "waiting": 0, "max_waiting": 1}
+    expected = {
+        "status": "ok",
+        "version": "0.1.0",
+        "running": 0,
+        "waiting": 0,
+        "max_waiting": 1,
+        "workflows": {
+            "flux2-klein": {"available": True, "reason": None},
+            "echo": {"available": True, "reason": None},
+        },
+    }
     assert client.get("/v1/health").json() == expected
     assert client.get("/healthz").json() == expected
 

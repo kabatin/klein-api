@@ -168,7 +168,9 @@ def test_plans_use_one_megapixel_multiples_of_64(backend: DrawThingsCliBackend) 
     standard = backend.plan(request(aspect_ratio=1.0, count=2)).estimate_seconds
     draft = backend.plan(request(aspect_ratio=1.0, count=2, quality="draft")).estimate_seconds
     assert (standard, draft) == (52.0, 30.0)
-    assert backend.typical_seconds("standard") == 26.0
+    assert backend.typical_seconds("klein-9b") == 26.0
+    z_image = backend.plan(request(aspect_ratio=1.0, model="z-image-turbo")).estimate_seconds
+    assert z_image == backend.typical_seconds("z-image-turbo") == 34.0
 
 
 def test_estimates_never_under_predict_measured_runs(backend: DrawThingsCliBackend) -> None:
@@ -214,6 +216,22 @@ def test_generate_passes_every_setting_explicitly(
     assert "--image" not in argv and "--strength" not in argv
     assert not (run_dir / PID_FILE).exists()
     assert "Sampling" in (run_dir / "backend-0.log").read_text()
+
+
+def test_z_image_turbo_runs_with_the_models_recommended_settings(
+    backend: DrawThingsCliBackend, tmp_path: Path, calls: Path
+) -> None:
+    run_dir = tmp_path / "job"
+    req = request(model="z-image-turbo", aspect_ratio=1.0)
+    result = backend.generate(req, run_dir, timeout_s=60, cancel=threading.Event())
+    assert result.ok, result.describe_failure()
+    argv = json.loads(calls.read_text().splitlines()[0])
+    flags = flags_of(argv)
+    assert flags["--model"] == "z_image_turbo_1.0_i8x.ckpt"
+    assert (flags["--width"], flags["--height"]) == ("1024", "1024")
+    # distilled: the CLI applies the model's own steps and guidance
+    assert "--steps" not in argv and "--cfg" not in argv
+    assert {"--local", "--offline", "--no-download-missing", "--disable-preview"} <= set(argv)
 
 
 def test_count_runs_one_process_per_image_with_seed_plus_i(
@@ -388,9 +406,24 @@ def test_health(backend: DrawThingsCliBackend, models_dir: Path) -> None:
     (models_dir / "qwen_3_4b_q8p.ckpt").unlink()
     checks = {c.name: c for c in backend.health()}
     model = checks["FLUX.2 [klein] standard model"]
-    assert model.level is Level.FAIL and model.detail.endswith("qwen_3_8b_q8p.ckpt-tensordata")
+    # Z Image Turbo can still serve: the missing klein files are a warning
+    assert checks["Z Image Turbo model"].level is Level.OK
+    assert model.level is Level.WARN and "qwen_3_8b_q8p.ckpt-tensordata" in model.detail
+    assert "klein-api setup --models klein-9b" in model.detail
     draft = checks["FLUX.2 [klein] draft model"]
-    assert draft.level is Level.FAIL and "qwen_3_4b_q8p.ckpt" in draft.detail
+    assert draft.level is Level.WARN and "qwen_3_4b_q8p.ckpt" in draft.detail
+    assert backend.model_problem("klein-9b") == (
+        "model files missing: qwen_3_8b_q8p.ckpt-tensordata"
+    )
+    assert backend.model_problem("z-image-turbo") is None
+    (models_dir / "flux_1_vae_f16.ckpt").unlink()
+    checks = {c.name: c for c in backend.health()}
+    # nothing can run any more: every missing model fails
+    assert all(
+        checks[name].level is Level.FAIL
+        for name in ("FLUX.2 [klein] standard model", "FLUX.2 [klein] draft model")
+    )
+    assert checks["Z Image Turbo model"].level is Level.FAIL
 
 
 def test_missing_cli(models_dir: Path, tmp_path: Path) -> None:
@@ -398,6 +431,7 @@ def test_missing_cli(models_dir: Path, tmp_path: Path) -> None:
         DrawThingsOptions(cli=str(tmp_path / "nope" / "draw-things-cli"), models_dir=models_dir)
     )
     assert {c.name: c for c in backend.health()}["draw-things-cli"].level is Level.FAIL
+    assert backend.model_problem("z-image-turbo") == "draw-things-cli is not installed"
     result = backend.generate(request(), tmp_path / "job", timeout_s=5, cancel=threading.Event())
     assert result.failure_code == "backend_unavailable" and not result.ok
 

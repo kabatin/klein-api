@@ -230,6 +230,26 @@ def test_a_draft_job_stops_the_server_first(
     assert "--remote" not in draft and flags_of(draft)["--model"] == "flux_2_klein_4b_i8x.ckpt"
 
 
+def test_a_z_image_job_stops_the_server_first(
+    backend: DrawThingsCliBackend, tmp_path: Path, calls: tuple[Path, Path]
+) -> None:
+    assert run(backend, tmp_path, request(job="job_A")).ok
+    assert backend.resident is not None and backend.resident.running()
+    z_image = GenerationRequest(
+        job_id="job_B",
+        prompt="a tram",
+        quality="standard",
+        aspect_ratio=1.0,
+        seed=3,
+        count=1,
+        model="z-image-turbo",
+    )
+    assert run(backend, tmp_path, z_image).ok
+    assert not backend.resident.running()
+    argv = lines(calls[0])[-1]
+    assert "--remote" not in argv and flags_of(argv)["--model"] == "z_image_turbo_1.0_i8x.ckpt"
+
+
 def test_a_dead_server_is_restarted_once_then_jobs_fall_back(
     backend: DrawThingsCliBackend,
     tmp_path: Path,
