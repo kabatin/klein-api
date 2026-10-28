@@ -208,7 +208,11 @@ def write_config(
     if data == current:
         return data, False
     text = dumps(data)
-    if tomllib.loads(text) != data:  # pragma: no cover - the emitter's own guarantee
+    try:
+        same = tomllib.loads(text) == data
+    except tomllib.TOMLDecodeError:  # pragma: no cover - the emitter's own guarantee
+        same = False
+    if not same:  # pragma: no cover
         raise SetupError("internal error: the TOML writer does not round-trip")
     _atomic_write(path, text)
     return data, True
