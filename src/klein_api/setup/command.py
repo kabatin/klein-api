@@ -36,10 +36,19 @@ def _stderr(message: str) -> None:
     sys.stderr.flush()
 
 
+def ask_on_stderr(prompt: str) -> str:
+    """Like input(), but the prompt goes to stderr: stdout is reserved for the report."""
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    return sys.stdin.readline().strip()
+
+
 @dataclass(frozen=True)
 class SetupArgs:
     models: tuple[ModelId, ...]
     config_path: Path
+    # the user named the components (--models): one that cannot be installed is a failure
+    explicit: bool = False
     config_is_default: bool = True
     check: bool = False
     yes: bool = False
@@ -60,7 +69,7 @@ class Deps:
     http_get: svc.HttpGet = svc.http_status
     machine: Callable[[Path], Machine] = machine_facts
     is_tty: Callable[[], bool] = lambda: sys.stdin.isatty()
-    ask: Callable[[str], str] = input
+    ask: Callable[[str], str] = ask_on_stderr
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
     home: Path = field(default_factory=Path.home)
     uid: int | None = None
@@ -155,12 +164,25 @@ def run_setup(args: SetupArgs, deps: Deps | None = None) -> tuple[int, dict[str,
     machine = d.machine(models_dir)
     rows = plan_rows(args, machine, engine, models_dir)
     if args.check:
-        outcome = Outcome(rows, current, _service_state(args, d, current), EXIT_OK)
-        return EXIT_OK, _report(args, d, outcome, machine, action="check")
-    outcome = _install(args, d, rows, engine, machine, models_dir, models_raw, current)
-    if outcome.exit_code == EXIT_OK and any(r.status == "needs_human" for r in outcome.rows):
-        outcome = replace(outcome, exit_code=EXIT_HUMAN)
+        # --check describes what is there: present components are "installed"
+        found = _with(rows, {r.id for r in rows if r.status == "already"}, status="installed")
+        checked = Outcome(found, current, _service_state(args, d, current), EXIT_OK)
+        outcome = _final(args, checked)
+        return outcome.exit_code, _report(args, d, outcome, machine, action="check")
+    outcome = _final(
+        args, _install(args, d, rows, engine, machine, models_dir, models_raw, current)
+    )
     return outcome.exit_code, _report(args, d, outcome, machine)
+
+
+def _final(args: SetupArgs, outcome: Outcome) -> Outcome:
+    if outcome.exit_code != EXIT_OK:
+        return outcome
+    if args.explicit and any(r.status == "unsupported" for r in outcome.rows):
+        return replace(outcome, exit_code=EXIT_FAILED)
+    if not args.check and any(r.status == "needs_human" for r in outcome.rows):
+        return replace(outcome, exit_code=EXIT_HUMAN)
+    return outcome
 
 
 def _with(rows: list[Row], ids: Container[str], **changes: Any) -> list[Row]:
@@ -324,7 +346,8 @@ def _report(
     report: dict[str, Any] = {
         "server": SERVER,
         "version": __version__,
-        "ok": outcome.error is None and all(r.status != "failed" for r in outcome.rows),
+        # exit 3 (a person has to act) is not ok either
+        "ok": outcome.exit_code == EXIT_OK and outcome.error is None,
         "action": action,
         "url": f"http://127.0.0.1:{_port(data)}",
         "lan": not is_loopback(host),

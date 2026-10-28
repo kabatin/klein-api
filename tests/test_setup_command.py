@@ -122,7 +122,7 @@ def test_service_writes_the_agent_waits_for_health_and_asks_for_the_dialog(
     code, report = run_setup(
         world.args("klein-4b", service=True, label_suffix="test", port=8799), world.deps()
     )
-    assert code == 3 and report["ok"]
+    assert code == 3 and report["ok"] is False  # a person has to act
     assert report["service"] == {
         "installed": True,
         "label": "com.github.kabatin.klein-api.test",
