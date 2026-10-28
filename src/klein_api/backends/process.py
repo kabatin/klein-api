@@ -23,6 +23,7 @@ PID_START_SLACK_S = 10.0
 # After SIGKILL, how long to wait for a GPU process to finish tearing down before giving up.
 KILL_WAIT_S = 120.0
 LineCallback = Callable[[str], None]
+ActivityCallback = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -55,13 +56,16 @@ def run_process(
     stop_grace_s: float = 20.0,
     env: Mapping[str, str] | None = None,
     use_pty: bool = False,
+    on_output: ActivityCallback | None = None,
 ) -> ProcessOutcome:
     """Run ``argv`` to completion (or until canceled / timed out), feeding each output line
     (stdout and stderr merged) to ``on_line`` and to ``log_path``.
 
     ``use_pty`` gives the child a pseudo-terminal as stdout: programs that block-buffer a
     pipe (draw-things-cli prints every progress line only at exit) then flush per line.
-    Whatever goes wrong here after the child started (even Ctrl-C), the child is stopped.
+    ``on_output`` is called for every chunk of output, complete line or not (a download's
+    ``\r`` progress shows the child is alive). Whatever goes wrong here after the child
+    started (even Ctrl-C), the child is stopped.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     pid_file = run_dir / PID_FILE
@@ -84,7 +88,15 @@ def run_process(
                 if slave is not None:
                     os.close(slave)
             canceled, timed_out = _supervise(
-                proc, pid_file, master, log, on_line, started, timeout_s, cancel, stop_grace_s
+                proc,
+                pid_file,
+                master,
+                log,
+                (on_line, on_output),
+                started,
+                timeout_s,
+                cancel,
+                stop_grace_s,
             )
     finally:
         if master is not None:
@@ -102,7 +114,7 @@ def _supervise(
     pid_file: Path,
     master: int | None,
     log: TextIO,
-    on_line: LineCallback | None,
+    callbacks: tuple[LineCallback | None, ActivityCallback | None],
     started: float,
     timeout_s: float,
     cancel: threading.Event,
@@ -112,7 +124,7 @@ def _supervise(
     try:
         pid_file.write_text(str(proc.pid), encoding="utf-8")
         source = master if master is not None else _fileno(proc)
-        reader = threading.Thread(target=_pump, args=(source, log, on_line), daemon=True)
+        reader = threading.Thread(target=_pump, args=(source, log, *callbacks), daemon=True)
         reader.start()
         return _wait(proc, started, timeout_s, cancel, stop_grace_s)
     except BaseException:
@@ -143,7 +155,12 @@ def _chunks(fd: int) -> Iterator[bytes]:
         yield chunk
 
 
-def _pump(source: int, log: TextIO, on_line: LineCallback | None) -> None:
+def _pump(
+    source: int,
+    log: TextIO,
+    on_line: LineCallback | None,
+    on_output: ActivityCallback | None = None,
+) -> None:
     """Forward complete lines; the log gets each line prefixed with seconds since start.
 
     Keeps draining even if logging or the callback fails: a reader that stopped would leave
@@ -161,6 +178,9 @@ def _pump(source: int, log: TextIO, on_line: LineCallback | None) -> None:
                 on_line(line)
 
     for chunk in _chunks(source):
+        if on_output is not None:
+            with contextlib.suppress(Exception):
+                on_output()
         pending += chunk
         *lines, pending = pending.split(b"\n")
         for raw in lines:
