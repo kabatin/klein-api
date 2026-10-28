@@ -90,6 +90,10 @@ class Workflow(ABC):
         reason = self.unavailable_reason()
         return reason is None, reason
 
+    def quality_availability(self) -> dict[str, tuple[bool, str | None]] | None:
+        """For ``/v1/health``: per quality tier (available, reason), or None without tiers."""
+        return None
+
 
 class WorkflowRegistry:
     def __init__(self, workflows: Iterable[Workflow]) -> None:

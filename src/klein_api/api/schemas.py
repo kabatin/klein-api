@@ -11,11 +11,21 @@ from klein_api.jobs.models import JobError, JobStatus
 from klein_api.jobs.queue import JobView
 
 
+class QualityHealth(BaseModel):
+    available: bool = Field(description="this tier's model files are installed")
+    reason: str | None = Field(default=None, description="why this tier cannot run")
+
+
 class WorkflowHealth(BaseModel):
     available: bool = Field(description="its engine is installed with its models: jobs accepted")
     reason: str | None = Field(
         default=None,
         description="why it (or one of its quality tiers) cannot run; null when everything can",
+    )
+    qualities: dict[str, QualityHealth] | None = Field(
+        default=None,
+        description="per `quality` tier (flux2-klein: draft = 4B, standard = 9B); "
+        "null for workflows without tiers",
     )
 
 

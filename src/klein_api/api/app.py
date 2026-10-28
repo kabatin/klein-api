@@ -25,6 +25,7 @@ from klein_api.api.schemas import (
     HealthResponse,
     JobAccepted,
     JobResponse,
+    QualityHealth,
     QueueCapacity,
     WorkflowHealth,
     WorkflowInfo,
@@ -115,7 +116,15 @@ def _workflow_health(registry: WorkflowRegistry) -> dict[str, WorkflowHealth]:
     health: dict[str, WorkflowHealth] = {}
     for workflow in registry:
         available, reason = workflow.availability()
-        health[workflow.id] = WorkflowHealth(available=available, reason=reason)
+        tiers = workflow.quality_availability()
+        qualities = (
+            None
+            if tiers is None
+            else {q: QualityHealth(available=ok, reason=why) for q, (ok, why) in tiers.items()}
+        )
+        health[workflow.id] = WorkflowHealth(
+            available=available, reason=reason, qualities=qualities
+        )
     return health
 
 

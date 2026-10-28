@@ -180,6 +180,10 @@ class Flux2KleinWorkflow(Workflow):
             return None
         return "; ".join(f"{q}: {p}" for q, p in problems.items())
 
+    def quality_availability(self) -> dict[str, tuple[bool, str | None]]:
+        problems = self._tier_problems()
+        return {q: (q not in problems, problems.get(q)) for q in ("draft", "standard")}
+
     def availability(self) -> tuple[bool, str | None]:
         """Available while one tier can run; ``reason`` then names the tier that cannot."""
         problems = self._tier_problems()

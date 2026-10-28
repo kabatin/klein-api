@@ -114,11 +114,17 @@ def test_a_missing_model_is_503_for_its_workflow_only(
     assert not backend.calls
     health = client.get("/v1/health").json()
     assert health["status"] == "ok"
+    both = {"available": True, "reason": None}
     assert health["workflows"] == {
-        "flux2-klein": {"available": True, "reason": None},
+        "flux2-klein": {
+            "available": True,
+            "reason": None,
+            "qualities": {"draft": both, "standard": both},
+        },
         "z-image-turbo": {
             "available": False,
             "reason": "model files missing: z_image_turbo_1.0_i8x.ckpt",
+            "qualities": None,
         },
     }
     accepted = client.post(KLEIN, json=BODY)
@@ -130,9 +136,15 @@ def test_flux2_klein_is_available_while_one_tier_is(
 ) -> None:
     backend.problems = {"klein-9b": "model files missing: flux_2_klein_9b_i8x.ckpt"}
     klein = client.get("/v1/health").json()["workflows"]["flux2-klein"]
+    missing_9b = "model files missing: flux_2_klein_9b_i8x.ckpt"
     assert klein == {
         "available": True,
-        "reason": "standard: model files missing: flux_2_klein_9b_i8x.ckpt",
+        "reason": f"standard: {missing_9b}",
+        # per tier (ixa picks the tier from this): draft = 4B files, standard = 9B files
+        "qualities": {
+            "draft": {"available": True, "reason": None},
+            "standard": {"available": False, "reason": missing_9b},
+        },
     }
     standard = client.post(KLEIN, json=BODY)
     assert standard.status_code == 503 and "standard tier" in standard.json()["error"]["message"]
@@ -141,3 +153,7 @@ def test_flux2_klein_is_available_while_one_tier_is(
     backend.problems["klein-4b"] = "draw-things-cli is not installed"
     klein = client.get("/v1/health").json()["workflows"]["flux2-klein"]
     assert klein["available"] is False and "draft: draw-things-cli" in klein["reason"]
+    assert klein["qualities"]["draft"] == {
+        "available": False,
+        "reason": "draw-things-cli is not installed",
+    }

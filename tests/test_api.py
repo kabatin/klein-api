@@ -62,8 +62,15 @@ def test_health_matches_vpipe_api_shape(client: TestClient) -> None:
         "waiting": 0,
         "max_waiting": 1,
         "workflows": {
-            "flux2-klein": {"available": True, "reason": None},
-            "echo": {"available": True, "reason": None},
+            "flux2-klein": {
+                "available": True,
+                "reason": None,
+                "qualities": {
+                    "draft": {"available": True, "reason": None},
+                    "standard": {"available": True, "reason": None},
+                },
+            },
+            "echo": {"available": True, "reason": None, "qualities": None},
         },
     }
     assert client.get("/v1/health").json() == expected

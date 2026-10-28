@@ -51,8 +51,12 @@ Identical to wan-api:
 ```json
 { "status": "ok", "version": "0.2.0", "running": 1, "waiting": 0, "max_waiting": 2,
   "workflows": {
-    "flux2-klein":   { "available": true,  "reason": "draft: model files missing: flux_2_klein_4b_i8x.ckpt" },
-    "z-image-turbo": { "available": false, "reason": "model files missing: z_image_turbo_1.0_i8x.ckpt" }
+    "flux2-klein":   { "available": true,  "reason": "draft: model files missing: flux_2_klein_4b_i8x.ckpt",
+                       "qualities": {
+                         "draft":    { "available": false, "reason": "model files missing: flux_2_klein_4b_i8x.ckpt" },
+                         "standard": { "available": true,  "reason": null } } },
+    "z-image-turbo": { "available": false, "reason": "model files missing: z_image_turbo_1.0_i8x.ckpt",
+                       "qualities": null }
   } }
 ```
 
@@ -60,7 +64,8 @@ Identical to wan-api:
 
 `workflows` (added in 0.2.0; the other fields are unchanged) has one entry per workflow: `available` —
 it can take jobs (for `flux2-klein`: at least one `quality` tier can); `reason` — why it, or one of its
-tiers, cannot run (`null` when everything can; never a path). A submit that cannot run gets
+tiers, cannot run (`null` when everything can; never a path); `qualities` — per `quality` tier
+(`flux2-klein`: `draft` = the 4B model files, `standard` = the 9B), `null` for a workflow without tiers. A submit that cannot run gets
 `503 workflow_unavailable`. One unavailable workflow does not make `status` `degraded`.
 
 ### `GET /v1/capabilities`

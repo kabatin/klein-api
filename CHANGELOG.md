@@ -13,7 +13,8 @@
   and VAE from Draw Things' model definition, the model's recommended settings (8 steps, CFG 1, UniPC Trailing) passed explicitly so an offline Mac without
   Draw Things' cached catalog does not fall back to generic defaults. Timing measured (33 s per
   image); memory and non-square sizes not yet.
-- `/v1/health` gains `workflows[id].{available, reason}`; a submit to a workflow (or `flux2-klein` tier) whose
+- `/v1/health` gains `workflows[id].{available, reason, qualities}` (`qualities.draft` / `.standard` for
+  `flux2-klein`); a submit to a workflow (or `flux2-klein` tier) whose
   model is missing gets `503 workflow_unavailable`. `serve` starts while any model is installed; `doctor`
   warns (instead of failing) about the others and `doctor --smoke` skips them.
 
