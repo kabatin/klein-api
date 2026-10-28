@@ -49,7 +49,7 @@ Identical to wan-api:
 ### `GET /healthz` and `GET /v1/health`
 
 ```json
-{ "status": "ok", "version": "0.2.0", "running": 1, "waiting": 0, "max_waiting": 2,
+{ "status": "ok", "version": "0.1.1", "running": 1, "waiting": 0, "max_waiting": 2,
   "workflows": {
     "flux2-klein":   { "available": true,  "reason": "draft: model files missing: flux_2_klein_4b_i8x.ckpt",
                        "qualities": {
@@ -62,7 +62,7 @@ Identical to wan-api:
 
 `503` with `"status": "degraded"` if the worker has stopped.
 
-`workflows` (added in 0.2.0; the other fields are unchanged) has one entry per workflow: `available` —
+`workflows` (added in 0.1.1; the other fields are unchanged) has one entry per workflow: `available` —
 it can take jobs (for `flux2-klein`: at least one `quality` tier can); `reason` — why it, or one of its
 tiers, cannot run (`null` when everything can; never a path); `qualities` — per `quality` tier
 (`flux2-klein`: `draft` = the 4B model files, `standard` = the 9B), `null` for a workflow without tiers. A submit that cannot run gets
@@ -75,7 +75,7 @@ descriptors** — a client must not assume values that are not listed here.
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.1.1",
   "queue": { "max_running": 1, "max_waiting": 2 },
   "workflows": [{
     "id": "flux2-klein",

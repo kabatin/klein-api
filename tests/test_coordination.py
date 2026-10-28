@@ -437,7 +437,7 @@ def test_a_job_waits_queued_while_another_gpu_server_is_busy(
     # waiting for another server is not running: the slot is not claimed
     assert client.get("/v1/health").json() | {} == {
         "status": "ok",
-        "version": "0.2.0",
+        "version": "0.1.1",
         "running": 0,
         "waiting": 1,
         "max_waiting": 1,

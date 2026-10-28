@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — 2026-10-28
+## 0.1.1 — 2026-10-28
 
 - `klein-api setup [--models klein-9b,klein-4b,z-image-turbo] [--check] [--yes] [--json] [--lan] [--service]
   [--port N] [--prefix DIR] [--label-suffix S] [--coordinate-with NAME=URL]`: the uniform setup command shared

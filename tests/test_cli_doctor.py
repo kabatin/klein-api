@@ -169,7 +169,7 @@ def test_smoke_is_skipped_when_checks_fail(settings: Settings, healthy: None) ->
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         cli.main(["--version"])
-    assert "klein-api 0.2.0" in capsys.readouterr().out
+    assert "klein-api 0.1.1" in capsys.readouterr().out
 
 
 def test_workflows_and_config_hide_the_token(
