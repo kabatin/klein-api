@@ -66,6 +66,7 @@ class Deps:
     uid: int | None = None
     emit: Emit = _stderr
     health_wait_s: float = svc.HEALTH_WAIT_S
+    launchd_poll_s: float = svc.LAUNCHD_POLL_S
 
 
 @dataclass(frozen=True)
@@ -267,7 +268,7 @@ def _configure(
     paths = svc.service_paths(d.home, args.label_suffix)
     env = {} if args.config_is_default else {ENV_PREFIX + "CONFIG": str(args.config_path)}
     try:
-        healthy = svc.install_service(
+        result = svc.install_service(
             paths,
             port=_port(data),
             config_env=env,
@@ -278,13 +279,17 @@ def _configure(
             uid=d.uid,
             emit=d.emit,
             wait_s=d.health_wait_s,
+            launchd_poll_s=d.launchd_poll_s,
         )
     except SetupError as exc:
         service = {"installed": False, "label": paths.label, "healthy": False}
         return Outcome(rows, data, service, EXIT_FAILED, str(exc))
-    service = {"installed": True, "label": paths.label, "healthy": healthy}
-    if not healthy:
+    service = {"installed": True, "label": paths.label, "healthy": result.healthy}
+    if not result.healthy:
         return Outcome(rows, data, service, EXIT_FAILED, f"no answer from the server: {paths.log}")
+    if not result.changed:
+        # same agent as before: the permission dialog was answered the first time
+        return Outcome(rows, data, service, EXIT_OK)
     ready = {row.id for row in rows if row.status in ("installed", "already")}
     waiting = _with(rows, ready, status="needs_human", fix=_fix(svc.DIALOG_HINT))
     return Outcome(waiting, data, service, EXIT_HUMAN)

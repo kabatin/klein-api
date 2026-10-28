@@ -26,6 +26,11 @@ LABEL = "com.github.kabatin.klein-api"
 REPO = "klein-api"
 HEALTH_WAIT_S = 60.0
 HEALTH_POLL_S = 1.0
+# after bootout, launchd removes the job asynchronously; bootstrap before that fails
+UNLOAD_WAIT_S = 10.0
+LAUNCHD_POLL_S = 0.25
+BOOTSTRAP_ATTEMPTS = 5
+BOOTSTRAP_RETRY_CODES = (5, 37)  # EIO / EALREADY: the old job is still being torn down
 PATH_ENV = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 DIALOG_HINT = (
     "approve the dialog on the Mac's screen: macOS asks whether klein-api may access data "
@@ -35,6 +40,13 @@ DIALOG_HINT = (
 Run = Callable[[Sequence[str]], int]
 # (url, bearer token or None) -> HTTP status, or None when nothing answers
 HttpGet = Callable[[str, str | None], int | None]
+
+
+@dataclass(frozen=True)
+class ServiceResult:
+    healthy: bool
+    # the plist was new or different: a reload with new settings (the macOS dialog may show)
+    changed: bool
 
 
 @dataclass(frozen=True)
@@ -99,8 +111,9 @@ def install_service(
     emit: Emit = lambda _: None,
     wait_s: float = HEALTH_WAIT_S,
     poll_s: float = HEALTH_POLL_S,
-) -> bool:
-    """Write the LaunchAgent, (re)load it and wait for ``/v1/health``. Returns healthy."""
+    launchd_poll_s: float = LAUNCHD_POLL_S,
+) -> ServiceResult:
+    """Write the LaunchAgent (tmp + rename), (re)load it and wait for ``/v1/health``."""
     found = which(REPO)
     if found is None:
         raise SetupError(
@@ -110,17 +123,36 @@ def install_service(
     program = str(Path(found).resolve())
     paths.plist.parent.mkdir(parents=True, exist_ok=True)
     paths.log.parent.mkdir(parents=True, exist_ok=True)
-    tmp = paths.plist.with_name(paths.plist.name + ".tmp")
-    tmp.write_bytes(plist_bytes(program, paths, config_env))
-    tmp.chmod(0o644)
-    tmp.replace(paths.plist)
-    emit(f"wrote {paths.plist}")
+    content = plist_bytes(program, paths, config_env)
+    changed = not paths.plist.is_file() or paths.plist.read_bytes() != content
+    if changed:
+        tmp = paths.plist.with_name(paths.plist.name + ".tmp")
+        tmp.write_bytes(content)
+        tmp.chmod(0o644)
+        tmp.replace(paths.plist)
+        emit(f"wrote {paths.plist}")
+    else:
+        emit(f"{paths.plist} unchanged; reloading it")
     domain = f"gui/{os.getuid() if uid is None else uid}"
-    run(["launchctl", "bootout", f"{domain}/{paths.label}"])  # not loaded yet is fine
-    if run(["launchctl", "bootstrap", domain, str(paths.plist)]) != 0:
-        raise SetupError(f"launchctl bootstrap {domain} {paths.plist} failed")
+    _reload(run, domain, paths, launchd_poll_s)
     emit(f"loaded {paths.label}; waiting for http://127.0.0.1:{port}/v1/health")
-    return wait_healthy(port, token, http_get=http_get, wait_s=wait_s, poll_s=poll_s)
+    healthy = wait_healthy(port, token, http_get=http_get, wait_s=wait_s, poll_s=poll_s)
+    return ServiceResult(healthy=healthy, changed=changed)
+
+
+def _reload(run: Run, domain: str, paths: ServicePaths, poll_s: float) -> None:
+    target = f"{domain}/{paths.label}"
+    run(["launchctl", "bootout", target])  # not loaded yet is fine
+    deadline = time.monotonic() + UNLOAD_WAIT_S
+    while run(["launchctl", "print", target]) == 0 and time.monotonic() < deadline:
+        time.sleep(poll_s)
+    for attempt in range(1, BOOTSTRAP_ATTEMPTS + 1):
+        code = run(["launchctl", "bootstrap", domain, str(paths.plist)])
+        if code == 0:
+            return
+        if code not in BOOTSTRAP_RETRY_CODES or attempt == BOOTSTRAP_ATTEMPTS:
+            raise SetupError(f"launchctl bootstrap {domain} {paths.plist} failed ({code})")
+        time.sleep(poll_s)
 
 
 def wait_healthy(

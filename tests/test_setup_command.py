@@ -138,6 +138,7 @@ def test_service_writes_the_agent_waits_for_health_and_asks_for_the_dialog(
     assert agent["StandardErrorPath"].endswith("Library/Logs/klein-api.test.log")
     assert world.launchctl == [
         ["launchctl", "bootout", "gui/501/com.github.kabatin.klein-api.test"],
+        ["launchctl", "print", "gui/501/com.github.kabatin.klein-api.test"],
         ["launchctl", "bootstrap", "gui/501", str(plist_path)],
     ]
     assert report["url"] == "http://127.0.0.1:8799"

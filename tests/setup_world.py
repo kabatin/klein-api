@@ -82,6 +82,7 @@ class World:
             uid=501,
             emit=self.messages.append,
             health_wait_s=0,
+            launchd_poll_s=0,
         )
         return replace(base, **overrides)
 
