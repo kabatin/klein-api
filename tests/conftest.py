@@ -39,3 +39,14 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     use_small_assets(monkeypatch, tmp_path)
     return World(tmp_path)
+
+
+@pytest.fixture
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """For tests that run `klein-api setup` through the CLI: a bug (or a check that does not
+    stop it) must never write the real ~/.config, ~/.local or ~/Library."""
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("KLEIN_API_CONFIG", str(home / ".config" / "klein-api" / "config.toml"))
+    return home

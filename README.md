@@ -89,13 +89,18 @@ anything (mode 0600). Running it again does nothing that is already done.
 | `--port N` | `port = N` |
 | `--coordinate-with NAME=HEALTH_URL` | add a `[[coordinate_with]]` peer (token from `KLEIN_API_COORD_TOKEN_<NAME>`) |
 | `--service` | write `~/Library/LaunchAgents/com.github.kabatin.klein-api.plist`, load it, wait for `/v1/health` |
-| `--label-suffix S` | a second service beside the real one (testing) |
+| `--label-suffix S` | a second service beside the real one (testing; `[A-Za-z0-9-]{1,32}`, needs `--port`) |
 
-Exit codes: 0 done, 1 failed, 2 bad arguments, 3 a person has to act (confirm the download, or the item below).
+Exit codes: 0 done, 1 failed, 2 bad arguments, 3 a person has to act (confirm the download, or the item below);
+`ok` is true only for 0. Bad arguments, a weak `KLEIN_API_TOKEN` with `--lan` or a bad `--coordinate-with`
+URL/token are refused before anything runs — with `--json` still as one JSON object. `--check` reports present
+components as `installed`; without `--models`, a component this Mac cannot run is reported `unsupported` but
+does not fail the run (naming it with `--models` does).
 
 **After `--service`, look at the Mac's screen.** The first time the service reads Draw Things' Models folder
 (inside another app's container), macOS asks whether klein-api may access data from other apps. Until someone
-approves, jobs hang; `setup` reports this as `needs_human`.
+approves, jobs hang; `setup` reports this as `needs_human` (exit 3) when the LaunchAgent is new or changed. A rerun
+with the same LaunchAgent only reloads it and exits 0.
 
 Or set it up by hand. The defaults expect:
 

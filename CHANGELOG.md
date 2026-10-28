@@ -8,7 +8,9 @@
   from the GitHub release (SHA-256 pinned; a hand-configured CLI is never replaced), fetches models with
   `draw-things-cli models ensure` under a silence watchdog (resumes), checks disk first, merges the config
   without removing keys (0600, atomic, token never printed), and with `--service` writes and loads a
-  LaunchAgent, waits for `/v1/health` and reports the macOS "access other apps' data" dialog as `needs_human`.
+  LaunchAgent (waiting for launchd to drop the old one), waits for `/v1/health` (never via a proxy) and reports
+  the macOS "access other apps' data" dialog as `needs_human` when the agent is new or changed. Arguments, the
+  LAN token and peers are validated before anything runs; usage errors with `--json` are one JSON report.
 - Workflow `z-image-turbo`: Z Image Turbo (Apache-2.0) text to image, 1–4 PNGs at the exact size; text encoder
   and VAE from Draw Things' model definition, the model's recommended settings (8 steps, CFG 1, UniPC Trailing) passed explicitly so an offline Mac without
   Draw Things' cached catalog does not fall back to generic defaults. Timing measured (33 s per

@@ -17,6 +17,9 @@ from klein_api.setup.command import run_setup
 from klein_api.setup.pins import COMPONENTS, FILE_BYTES
 from tests.setup_world import CLI_BYTES, GRPC_BYTES, MAC, World, rows, tree
 
+# never the real home: these tests also run setup through the CLI
+pytestmark = pytest.mark.usefixtures("isolated_home")
+
 
 def test_check_reports_sizes_and_changes_nothing(world: World) -> None:
     before = tree(world.tmp)
@@ -162,9 +165,7 @@ def test_lan_sets_a_token_that_is_never_reported(world: World) -> None:
 
 
 def test_cli_rejects_unknown_ids_with_exit_2(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(["setup", "--models", "klein-9b,flux-pro"])
-    assert exc.value.code == 2
+    assert main(["setup", "--models", "klein-9b,flux-pro"]) == 2
     assert "valid: klein-9b, klein-4b, z-image-turbo" in capsys.readouterr().err
 
 
