@@ -3,6 +3,8 @@
 **Run FLUX.2 [klein] text/reference-to-image (and Z Image Turbo text-to-image) on your Apple Silicon Mac
 as an HTTP job API.**
 
+> One of the local generation servers behind **[iXA Video Creator](https://github.com/kabatin/ixa-video-creator)**, which turns a song into a music video on one Apple Silicon Mac. It also works on its own.
+
 `klein-api` is a small, safe job server around FLUX.2 [klein] and Z Image Turbo, driven headless through
 [`draw-things-cli`](https://drawthings.ai). Send a prompt and an exact output size, get back 1–4 PNGs:
 
